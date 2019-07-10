@@ -25,6 +25,7 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
     "outer_taper_length",
     "taper_angle",
     "inner_taper_length",
+    "hole_length_gap",     // can use gap (i.e. xtal_length - hole_length) instead. This keyword must be before "hole_length".
     "hole_length",
     "hole_radius",
     "hole_bullet_radius",
@@ -61,9 +62,9 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
     ""
   };
 
-  int   ii, i, l, n=0, ok, iint = 0;
+  int   ii, i, l, n=0, ok, iint = 0, diameter = 0;
   float fi;
-  char  *c, line[256], name[256];
+  char  *c, line[256], line2[256], name[256];
   FILE  *file;
 
 
@@ -83,12 +84,26 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
     n++;
     /* ignore comments and blank lines */
     if (strlen(line) < 3 || *line == ' ' || *line == '\t' || *line == '#') continue;
+    /* if line contains "_diam" (for diameter) replace with "_radius"
+       this allows the user to specify diametwrs instead of radii */
+    diameter = 0;
+    if ((c = strstr(line, "_diam"))) {
+      diameter = 1;
+      if (setup->verbosity >= CHATTY) printf("Line: %s", line);
+      strcpy(line2, c+5);
+      strcpy(c, "_radius");
+      strcpy(c+7, line2);
+      if (setup->verbosity >= CHATTY) printf("   -->  %s", line);      
+    }
+
     for (i=0; (l=strlen(key_word[i])) > 0; i++) {
       if (!strncmp(line, key_word[i], l)) {
 	/* line starts with key_word[i] */
+      printf("Line: %s", line);
 	if (line[l] != ' ' && line[l] != '\t') {
 	  ok = 0;
 	} else {
+	  // for (c = line + l; *c != ' ' && *c != '\t'; c++) ;
 	  /* find next non-white-space char */
 	  for (c = line + l; *c == ' ' || *c == '\t'; c++) ;
 	  name[0] = 0;
@@ -114,6 +129,7 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
 	  } else {
 	    /* extract float value */
 	    ok = sscanf(c, "%f", &fi);
+            if (diameter) fi /= 2.0;
 	  }
 	}
 	if (ok < 1) {
@@ -154,6 +170,11 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
 	  setup->inner_taper_length = fi;
 	} else if (strstr(key_word[i], "hole_length")) {
 	  setup->hole_length = fi;
+          /* the user can specify "hole_length_gap" = xtal_length - hole_length, instead of "hole_length" */
+          if (strstr(line, "hole_length_gap")  && fi < setup->xtal_length) {
+            setup->hole_length = setup->xtal_length - fi;
+            if (setup->verbosity >= CHATTY) printf("   -->  hole_length: %f\n", setup->hole_length);
+          }
 	} else if (strstr(key_word[i], "hole_radius")) {
 	  setup->hole_radius = fi;
 	} else if (strstr(key_word[i], "hole_bullet_radius")) {
