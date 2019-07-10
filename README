@@ -1,0 +1,44 @@
+This is the source code of the Majorana Demonstrator / MaGe signal simulation software.
+It was most recently re-written by David C. Radford in Nov/Dec 2014.
+Earlier versions of the fieldgen code were called m3dcr/ppc8 and ppc9, also by DCR
+Earlier versions of the siggen code were by I-Yang Lee (in fortran), Karin Lagergren, and DCR.
+
+
+These codes are for unsegmented, cylindrically symmetric point-contact HPGe detectors.
+They will work for both p-type and n-type detectors.
+
+mjd_fieldgen:
+    This code calculates the electric potential and weighting potential in
+    the detector and writes them to files as specified in the configuration file.
+    If you tell it to calculate the weight potential, it will also calculate
+    the detector capacitance.
+    It properly identifies and handles undepleted regions of the detector,
+    including their effect on the weighting potential and capacitance.
+    This is a stand-alone code and should not need any additional interface.
+
+mjd_siggen (and signal_tester):
+    This code uses the potentials calculated by mjd_fieldgen to simulate the signals
+    from energy depositions at specific locations inside the detector.
+    This can be considered a library rather than a stand-alone program, although
+    signal_tester serves as a test/demonstration program as well as a template for
+    how to use the package. You can write your own interface or input/output code
+    to compile with the siggen modules. 
+    The siggen modules compile cleanly under both gcc and g++, so you can call them
+    from C++ code without writing a separate wrapper.
+
+A single configuration file is used to control the behavior of both the
+fieldgen and siggen codes. A well-commented example can be found inside the
+config_files directory.
+
+There is a simple Makefile to compile mjd_fieldgen and signal_tester.
+
+As written, signal_tester.c requires the gnu readline development package.
+    If you do not have that package and are unable to install it, you can simply
+     remove all references to readline and history in signal_tester.c and Makefile,
+     and replace the call to
+  rl_gets(ans, MAX_LINE);
+     with
+  fgets(ans, MAX_LINE, stdin);
+
+
+Please send questions and comments to radforddc@ornl.gov

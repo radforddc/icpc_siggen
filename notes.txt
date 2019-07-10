@@ -1,0 +1,24 @@
+
+TO DO:
+
+- measure cpu time and try to optimize 
+    - lots of redundant operations in efield_exists()
+    - if vel << grid size, calculate dq/dt, number of steps?
+    - can we combine calls grid_weights?
+    	  - ipt and w in setup? also rlen, zlen, etc?
+- mjd_fieldgen: add partial voxel-filling for outer contact and ditch?
+
+Done:
+
+8 Dec 2014 - added capacitance calculation following WP calculation
+           - added proper handling of undepleted voxels in WP calculation
+	   - can now calculate realistic signals without full depletion
+12-20 Dec 2014 - added charge cloud self-repulsion
+               - added field dependence of diffusion coefficient
+	       - added surface charge, quadratic charge profile, radial charge profiles
+	       - added logging of config params to start of field and WP files
+
+- added li_thickness, bulletization, etc to fieldgen
+- added over-relaxation to fieldgen, significant speed improvement
+
+

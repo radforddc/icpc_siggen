@@ -1,0 +1,110 @@
+%!PS-Adobe-1.0
+%%Creator: D.C. Radford
+%%Pages: 1
+%%DocumentFonts: 
+%%BoundingBox: 36 36 598 756
+%%EndComments
+
+%   define procedures to draw lines
+  /draw {newpath moveto lineto stroke} bind def
+  /sline {newpath moveto lineto} bind def
+  /cline {lineto lineto} bind def
+  /eline {{lineto} repeat stroke} bind def
+  /ecline {{lineto} repeat closepath stroke} bind def
+  /efline {{lineto} repeat closepath gsave fill grestore stroke} bind def
+/s {stroke} bind def
+/m {newpath moveto} bind def
+/d {lineto} bind def
+
+0 setlinecap 1 setlinejoin
+
+%%EndProlog
+
+%%Page: 1 1 save
+240 550 translate
+3.3 3.3 scale 
+/Helvetica findfont 5 scalefont setfont
+
+
+.8 .8 1 setrgbcolor
+0 -33 m 7 -40 d 70 -40 d 70 -5 d 25 -5 d 25 5 d 70 5 d 70 40 d 7 40 d 0 33 d closepath fill
+1 setgray
+0  20 m 3  20 d 3  25 d 0  25 d closepath fill
+0 -20 m 3 -20 d 3 -25 d 0 -25 d closepath fill
+
+0.7 0 0 setrgbcolor  1 setlinewidth
+0 -25 m 0 -33 d 7 -40 d 70 -40 d 70 -5 d 25 -5 d 25 5 d 70 5 d 70 40 d 7 40 d 0 33 d 0 25 d stroke
+0 0 0.7 setrgbcolor  0.4 setlinewidth
+0 -2.5 m 1.5 -2.5 d 1.5 2.5 d 0 2.5 d closepath fill
+
+0 setgray
+-20  0 m  -2  0 d stroke
+-20  5 m -17  5 d -8 2.5 d -2 2.5 d stroke
+-20 10 m -17 10 d -8   5 d -2   5 d stroke
+-20 20 m  -2 20 d stroke
+-20 25 m  -2 25 d stroke
+-20 33 m  -2 33 d stroke
+-20 40 m  -2 40 d stroke
+gsave
+-30 -2 translate
+  0  0 moveto (r=0) show
+  0  5 moveto (RC) show
+  0 10 moveto (RH) show
+-10 20 moveto (RO-WO) show
+  0 25 moveto (RO) show
+ 15 36.5 moveto (LT) show
+  3 40 moveto (R) show
+grestore
+25 10 m 28 11 d 28 9 d 25 10 d 70 10 d 67 11 d 67 9 d 70 10 d stroke
+43 12 moveto (LH) show
+
+gsave
+0 -40 translate 90 rotate
+-20   0 m  -2   0 d stroke
+-20  -6 m -17  -6 d -8 -1.5 d 36 -1.5 d stroke
+-20 -12 m -17 -12 d -8 -3 d 13 -3 d stroke
+-20 -18 m -17 -18 d -8 -7 d -2 -7 d stroke
+-20 -25 m  -2 -25 d stroke
+-20 -70 m  -2 -70 d stroke
+gsave
+-30 -2 translate
+  0   1 moveto (z=0) show
+  0  -6 moveto (LC) show
+  0 -12 moveto (LO) show
+  0 -18 moveto (LT) show
+ -3 -25 moveto (L-LH) show
+  3 -70 moveto (L) show
+grestore
+grestore
+
+0.5 setgray
+ 5  0 m 50 0 d stroke
+gsave
+50 0 translate
+0 0 m 10 0 d 7 1 d 7 -1 d 10 0 d stroke
+12 -1 moveto (z) show
+grestore
+0 30 m 0 50 d stroke
+gsave
+0 40 translate 90 rotate
+0 0 m 10 0 d 7 1 d 7 -1 d 10 0 d stroke
+grestore
+-1 52 moveto (r) show
+
+0 setgray
+-30 -90 translate
+0   0 moveto (L  = xtal_length) show
+0  -6 moveto (R  = xtal_radius) show
+0 -12 moveto (LC = pc_length) show
+0 -18 moveto (RC = pc_radius) show
+0 -24 moveto (LT = taper_length) show
+0 -30 moveto (RO = wrap_around_radius) show
+0 -36 moveto (LO = ditch_depth) show
+0 -42 moveto (WO = ditch_thickness) show
+0 -48 moveto (LH = hole_length) show
+0 -54 moveto (RH = hole_radius) show
+
+
+showpage
+%%Trailer
+%%Pages: 1
