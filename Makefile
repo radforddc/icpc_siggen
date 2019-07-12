@@ -12,7 +12,7 @@ RM = rm -f
 mk_signal_files = calc_signal.c cyl_point.c detector_geometry.c fields.c point.c read_config.c
 mk_signal_headers = calc_signal.h cyl_point.h detector_geometry.h fields.h mjd_siggen.h point.h
 
-All: stester mjd_fieldgen mass
+All: stester mjd_fieldgen mass drift_time_map
 
 # interactive interface for signal calculation code
 stester: $(mk_signal_files) $(mk_signal_headers) signal_tester.c
@@ -23,6 +23,9 @@ mjd_fieldgen: mjd_fieldgen.c read_config.c mjd_siggen.h
 
 mass: mass.c read_config.c mjd_siggen.h
 	$(CC) $(CFLAGS) -o $@ mass.c read_config.c -lm
+
+drift_time_map: $(mk_signal_files) $(mk_signal_headers) drift_time_map.c
+	$(CC) $(CFLAGS) -o $@ $(mk_signal_files) drift_time_map.c -lm
 
 FORCE:
 

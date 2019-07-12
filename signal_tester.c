@@ -12,8 +12,8 @@
  *   and to remove code not needed for unsegmented point contact detectors
  *
  * to compile: 
- *  gcc -o st signal_tester.c read_config.c point.c cyl_point.c calc_signal.c\
- *    fields.c detector_geometry.c signal_calc_util.c -lm -lreadline
+ *  gcc -O3 -Wall -o stester calc_signal.c cyl_point.c detector_geometry.c \
+ *                   fields.c point.c read_config.c signal_tester.c -lm -lreadline
  */
 
 #include <stdio.h>
