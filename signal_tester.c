@@ -416,6 +416,15 @@ static int drift_paths(char *cmd, MJD_Siggen_Setup *setup){
   int i, nt;
   char *cp, *cp2;
 
+  int h_only=0;  // set to 1 for use with speed_path_iso figures
+
+
+  if ((cp = strstr(cmd, "-h"))) {
+    while (*(cp-1) == ' ') cp--;
+    *cp = 0;
+    h_only = 1;
+  }
+
   for (cp = cmd; isspace(*cp); cp++);
   for (cp2 = cp + strlen(cp); isspace(*cp2); cp2--)//remove whitespace
     *cp2 = '\0';
@@ -428,15 +437,26 @@ static int drift_paths(char *cmd, MJD_Siggen_Setup *setup){
     printf("failed to open output file: %s\n", cp);
     return 1;
   }
-  
-  nt = drift_path_e(&dpe, setup);
-  drift_path_h(&dph, setup);
-  fprintf(fp,"n ex ey ez hx hy hz\n");
-  for (i = 0; i < nt; i++){
-    fprintf(fp,"%d %.3f %.3f %.3f %.3f %.3f %.3f\n",
-	   i, dpe[i].x, dpe[i].y, dpe[i].z, dph[i].x, dph[i].y, dph[i].z);
+
+  if (h_only) {
+    nt =  drift_path_h(&dph, setup);
+    fprintf(fp,"#hx hy hz\n");
+    for (i = 0; i < nt && dph[i].z > 0.0; i++){
+      fprintf(fp,"%7.3f %7.3f %7.3f\n", dph[i].x, dph[i].z, -dph[i].x);
+    }
+  } else {
+    nt = drift_path_e(&dpe, setup);
+    drift_path_h(&dph, setup);
+    fprintf(fp,"# n ex ey ez hx hy hz\n");
+    for (i = 0; i < nt; i++) {
+      if (dpe[i].x == 0 && dpe[i].y == 0 && dpe[i].y == 0 &&
+          dph[i].x == 0 && dph[i].y == 0 && dph[i].y == 0) break;
+      fprintf(fp,"%4d %7.3f %7.3f %7.3f %7.3f %7.3f %7.3f\n",
+              i, dpe[i].x, dpe[i].y, dpe[i].z, dph[i].x, dph[i].y, dph[i].z);
+    }
   }
 
+  fprintf(fp,"\n");
   fclose(fp);
   return 0;
 }

@@ -80,9 +80,9 @@ static int efield_exists(cyl_pt pt, MJD_Siggen_Setup *setup){
     TELL_CHATTY("point %s is outside crystal\n", ptstr);
     return 0;
   }
-  ipt.r = (pt.r - setup->rmin)/setup->rstep;
+  ipt.r = (pt.r - setup->rmin)/setup->rstep;  // CHECKED: no need for lrintf
   ipt.phi = 0;
-  ipt.z = (pt.z - setup->zmin)/setup->zstep;
+  ipt.z = (pt.z - setup->zmin)/setup->zstep;  // CHECKED: no need for lrintf
 
   if (ipt.r < 0 || ipt.r + 1 >= setup->rlen ||
       ipt.z < 0 || ipt.z + 1 >= setup->zlen){
@@ -274,9 +274,9 @@ static int nearest_field_grid_index(cyl_pt pt, cyl_int_pt *ipt,
       for (dr=0; dr<3; dr++) {
 	new_pt.r = pt.r + d[dr]*setup->rstep;
 	if (efield_exists(new_pt, setup)) {
-	  last_ipt.r = (new_pt.r - setup->rmin)/setup->rstep;
+	  last_ipt.r = (new_pt.r - setup->rmin)/setup->rstep;  // CHECKED: do NOT use lrintf
 	  last_ipt.phi = 0;
-	  last_ipt.z = (new_pt.z - setup->zmin)/setup->zstep;
+	  last_ipt.z = (new_pt.z - setup->zmin)/setup->zstep;  // CHECKED: do NOT use lrintf
 	  *ipt = last_ipt;
 	  if (dr == 0 && dz == 0) {
 	    last_ret = 0;
@@ -488,7 +488,7 @@ static int setup_velo(MJD_Siggen_Setup *setup){
 static int setup_efield(MJD_Siggen_Setup *setup){
   FILE   *fp;
   char   line[MAX_LINE], *cp;
-  int    i, j, lineno;
+  int    i, j, lineno = 0;
   float  v, eabs, er, ez;
   cyl_pt cyl, **efld;
 
@@ -517,7 +517,6 @@ static int setup_efield(MJD_Siggen_Setup *setup){
     memset(efld[i], 0, setup->zlen*sizeof(*efld[i]));
   }
   TELL_NORMAL("Reading electric field data from file: %s\n", setup->field_name);
-  lineno = 0;
 
   /*now read the table*/
   while(fgets(line, MAX_LINE, fp) != NULL){

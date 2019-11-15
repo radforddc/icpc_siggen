@@ -23,8 +23,10 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
     "bottom_taper_length",  // note: these two keywords must stay adjacent, in this order
     "taper_length",         // <- for compatibility with old mjd config files, == "bottom taper_length
     "outer_taper_length",
+    "outer_taper_width",
     "taper_angle",
     "inner_taper_length",
+    "inner_taper_width",
     "hole_length_gap",     // can use gap (i.e. xtal_length - hole_length) instead. This keyword must be before "hole_length".
     "hole_length",
     "hole_radius",
@@ -164,10 +166,14 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
 	  setup->bottom_taper_length = fi;
 	} else if (strstr(key_word[i], "outer_taper_length")) {
 	  setup->outer_taper_length = fi;
+	} else if (strstr(key_word[i], "outer_taper_width")) {
+	  setup->outer_taper_width = fi;
 	} else if (strstr(key_word[i], "taper_angle")) {
 	  setup->taper_angle = fi;
 	} else if (strstr(key_word[i], "inner_taper_length")) {
 	  setup->inner_taper_length = fi;
+	} else if (strstr(key_word[i], "inner_taper_width")) {
+	  setup->inner_taper_width = fi;
 	} else if (strstr(key_word[i], "hole_length")) {
 	  setup->hole_length = fi;
           /* the user can specify "hole_length_gap" = xtal_length - hole_length, instead of "hole_length" */
@@ -271,11 +277,11 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
   } else {
     /* convert taper width to taper angle */
     if (setup->outer_taper_length > 0 &&
-        setup->taper_angle > 0)
+        setup->outer_taper_width > 0)
       setup->taper_angle =
         atan(setup->outer_taper_width/setup->outer_taper_length) * 180.0/3.14159;
-    if (setup->inner_taper_length > 0 &&
-        setup->taper_angle > 0)
+    else if (setup->inner_taper_length > 0 &&
+             setup->inner_taper_width > 0)
       setup->taper_angle =
         atan(setup->inner_taper_width/setup->inner_taper_length) * 180.0/3.14159;
     if (setup->taper_angle > 0)
@@ -291,7 +297,7 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
       (setup->hole_radius +
        setup->outer_taper_width +
        setup->inner_taper_width) > setup->xtal_radius) {
-    printf("\nERROR: Inconsistent detector dimesions:\n"
+    printf("\nERROR: Inconsistent detector dimensions:\n"
            "   crystal length and radius: %5.2f %5.2f\n"
            "      hole length and radius: %5.2f %5.2f\n"
            "outer taper length and width: %5.2f %5.2f\n"

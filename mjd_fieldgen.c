@@ -41,10 +41,10 @@
 #define BBR_TEST  ((BBR > 0 && r > R-LiT-BBR && z < BBR + LiT && \
                    (r-R+LiT+BBR)*(r-R+LiT+BBR) + (z-BBR-LiT)*(z-BBR-LiT) > BBR*BBR))     // test for bottom bulletization
 
-// #define OVER_RELAX_F1 1.0  // no longer used
-// #define OVER_RELAX_F2 0.98
+// #define OVER_RELAX_FACTOR 0.98
 // the following definition of the factor for over-relaxation improves convergence time by a factor ~ 70 for a 2kg ICPC detector
-#define OVER_RELAX_F2 (0.988 * (1.0 - 1.0/(double)(1+iter/4)))
+#define OVER_RELAX_FACTOR (0.976 + 0.006 * (double) istep)
+// #define OVER_RELAX_FACTOR (0.988 * (1.0 - 1.0/(double)(1+iter/4)))
 
 
 int report_config(FILE *fp_out, char *config_file_name);
@@ -604,6 +604,10 @@ int main(int argc, char **argv)
     // now do the actual relaxation
     //for (iter=0; iter<max_its/3; iter++) {
     for (iter=0; iter<max_its; iter++) {
+      double OR_fact = OVER_RELAX_FACTOR;
+      if (iter < 2) OR_fact = 0.0;
+      else if (iter < 200) OR_fact *= 0.9;
+
       if (old == 0) {
 	old = 1;
 	new = 0;
@@ -710,7 +714,7 @@ int main(int argc, char **argv)
 	  }
 	  // calculate difference from last iteration, for convergence check
 	  dif = v[old][z][r] - v[new][z][r];
-          v[new][z][r] += OVER_RELAX_F2*save_dif; // do over-relaxation
+          v[new][z][r] += OR_fact*save_dif; // do over-relaxation
 
 	  if (dif < 0.0f) dif = -dif;
 	  sum_dif += dif;
@@ -1123,6 +1127,10 @@ int main(int argc, char **argv)
 
     // now do the actual relaxation
     for (iter=0; iter<max_its; iter++) {
+      double OR_fact = OVER_RELAX_FACTOR;
+      if (iter < 2) OR_fact = 0.0;
+      else if (iter < 200) OR_fact *= 0.9;
+
       if (old == 0) {
 	old = 1;
 	new = 0;
@@ -1214,7 +1222,7 @@ int main(int argc, char **argv)
 	    mean = v_sum / eps_sum;
 	    v[new][z][r] = mean;
 	    dif = v[old][z][r] - v[new][z][r];
-            v[new][z][r] += OVER_RELAX_F2*save_dif; // do over-relaxation
+            v[new][z][r] += OR_fact*save_dif; // do over-relaxation
 	    if (dif < 0.0f) dif = -dif;
 	    sum_dif += dif;
 	    if (max_dif < dif) max_dif = dif;
@@ -1287,7 +1295,7 @@ int main(int argc, char **argv)
     printf("\n");
   }
 
-  if (WP == 1) {
+  if (WP) {
     // write WP values to output file
     if (!(file = fopen(setup.wp_name, "w"))) {
       printf("ERROR: Cannot open file %s for weighting potential...\n", setup.wp_name);
@@ -1305,12 +1313,23 @@ int main(int argc, char **argv)
       if (bubble_volts > 0.0f) fprintf(file, "# Pinch-off bubble at %.0f V potential\n", bubble_volts);
     }
     fprintf(file, "#\n## r (mm), z (mm), WP\n");
-    for (r=0; r<R+1; r++) {
-      for (z=0; z<L+1; z++) {
-	fprintf(file, "%7.2f %7.2f %10.6f\n",
-		((float) r)*grid,  ((float) z)*grid, v[new][z][r]);
+    if (WP > 1) {
+      for (r=-R; r<R+1; r++) {
+        if ((i=r) < 0) i = -r;
+        for (z=0; z<L+1; z++) {
+          fprintf(file, "%7.2f %7.2f %12.6e\n",
+                  ((float) r)*grid,  ((float) z)*grid, v[new][z][i]);
+        }
+        fprintf(file, "\n");
       }
-      fprintf(file, "\n");
+    } else {
+      for (r=0; r<R+1; r++) {
+        for (z=0; z<L+1; z++) {
+          fprintf(file, "%7.2f %7.2f %12.6e\n",
+                  ((float) r)*grid,  ((float) z)*grid, v[new][z][r]);
+        }
+        fprintf(file, "\n");
+      }
     }
     fclose(file);
   }
