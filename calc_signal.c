@@ -218,14 +218,14 @@ int get_signal(point pt, float *signal_out, MJD_Siggen_Setup *setup) {
    returns 0 for success
 */
 int make_signal(point pt, float *signal, float q, MJD_Siggen_Setup *setup) {
-  static float wpot, dwpot;
+  float  wpot, wpot2=0, dwpot;
   char   tmpstr[MAX_LINE];
   point  new_pt;
   vector v, dx;
   float  vel0, vel1 = 0, wpot_old=-1;
   // double diffusion_coeff;
   double repulsion_fact = 0.0, ds2, ds3, dv, ds_dt;
-  int    ntsteps, i, t, n, collect2pc, low_field=0, surface_drift=0;
+  int    ntsteps, i, t, n, collect2pc, low_field=0, surface_drift=0, stop_drifting = 0;
 
   new_pt = pt;
   collect2pc = ((q > 0 && setup->impurity_z0 < 0) ||  // holes for p-type 
@@ -238,7 +238,7 @@ int make_signal(point pt, float *signal, float q, MJD_Siggen_Setup *setup) {
   }
   */
   ntsteps = setup->time_steps_calc;
-  for (t = 0; drift_velocity(new_pt, q, &v, setup) >= 0; t++) { 
+  for (t = 0; drift_velocity(new_pt, q, &v, setup) >= 0 && !stop_drifting; t++) { 
     if (q > 0) {
       setup->dpath_h[t] = new_pt;
     } else {
@@ -296,7 +296,7 @@ int make_signal(point pt, float *signal, float q, MJD_Siggen_Setup *setup) {
 
     TELL_CHATTY("pt: (%.2f %.2f %.2f), v: (%e %e %e)",
 		new_pt.x, new_pt.y, new_pt.z, v.x, v.y, v.z);
-    if (t >= ntsteps - 2) {
+    if (0 && t >= ntsteps - 2) {   // DRC removed (if(0)) Oct 2019; t>ntsteps now dealt with below
       if (collect2pc || wpot > WP_THRESH_ELECTRONS) {
 	/* for p-type, this is hole or electron+high wp */
 	TELL_CHATTY("\nExceeded maximum number of time steps (%d)\n", ntsteps);
@@ -312,8 +312,14 @@ int make_signal(point pt, float *signal, float q, MJD_Siggen_Setup *setup) {
     }
     if (wpot < 0.0) wpot = 0.0;
     TELL_CHATTY(" -> wp: %.4f\n", wpot);
+
+    /* ------------- DCR added Oct 2019: if WP is very small or large, then stop drifting */
+    if (!collect2pc &&    wpot < 5.0e-5) stop_drifting = 2;    // drifting to outside
+    if (collect2pc && 1.0-wpot < 5.0e-5) stop_drifting = 3;    // drifting to point contact
+    if (t >= setup->time_steps_calc - 2) stop_drifting = 1;    // have run out of time...
+
     if (t > 0) signal[t] += q*(wpot - wpot_old);
-    // FIXME? Hack added by DCR to deal with undepleted point contact
+    // FIXME! Hack added by DCR to deal with undepleted point contact
     if (wpot >= 0.999 && (wpot - wpot_old) < 0.0002) {
       low_field = 1;
       break;
@@ -343,24 +349,23 @@ int make_signal(point pt, float *signal, float q, MJD_Siggen_Setup *setup) {
 
   }
   if (t == 0) {
-    TELL_CHATTY("The starting point %s is outside the field.\n",
+    TELL_CHATTY("The starting point %s is outside the WP or field.\n",
 		pt_to_str(tmpstr, MAX_LINE, pt));
     return -1;
   }
 
   if (low_field) {
-    TELL_CHATTY("Too many time steps or low field; this may or may not be a problem.\n");
+    TELL_CHATTY("Low field near point contact; this may or may not be a problem.\n");
   } else {
-    TELL_CHATTY("Drifted to edge of field grid, point: %s q: %.2f\n", 
+    TELL_CHATTY("Drifted to edge of WP or field grid, point: %s q: %.2f\n", 
 		pt_to_str(tmpstr, MAX_LINE, new_pt), q);
-
-    /* now we are outside the electric grid. figure out how much we must
-       drift to get to the crystal boundary */
-    for (n = 0; n+t < ntsteps; n++){
+  }
+  if (!low_field && stop_drifting<2) {
+    /* figure out how much we must drift to get to the crystal boundary */
+    for (n = 0; n+t < ntsteps && !outside_detector(new_pt, setup); n++){
       new_pt = vector_add(new_pt, dx);
       if (q > 0) setup->dpath_h[t+n] = new_pt;
       else setup->dpath_e[t+n] = new_pt;
-      if (outside_detector(new_pt, setup)) break;
     }
     if (n == 0) n = 1; /* always drift at least one more step */
     // TELL_CHATTY(
@@ -368,20 +373,28 @@ int make_signal(point pt, float *signal, float q, MJD_Siggen_Setup *setup) {
 		q, t, n, pt.x, pt.y, pt.z, new_pt.x, new_pt.y, new_pt.z);
 
     if (n + t >= ntsteps){
+      n = ntsteps - t;
       if (q > 0 || wpot > WP_THRESH_ELECTRONS) { /* hole or electron+high wp */
 	TELL_CHATTY("Exceeded maximum number of time steps (%d)\n", ntsteps);
-	return -1;  /* FIXME DCR: does this happen? could this be improved? */
+        /* check WP to see if we have produced most of the signal */
+        if ((wpot < 0.95 || wpot > 0.05) &&
+            wpotential(new_pt, &wpot2, setup) != 0) {
+          TELL_CHATTY("Cannot finish drifting to make at least 95\% of signal.\n");
+          return -1;  /* FIXME: could this be improved? */
+        }
+        /* drift to new_pt and wpot2 */
+        dwpot = (wpot2 - wpot)/n;
       }
-      n = ntsteps -t;
-    }
-    /* make WP go gradually to 1 or 0 */
-    if (wpot > 0.3) {
-      dwpot = (1.0 - wpot)/n;
     } else {
-      dwpot = - wpot/n;
+      /* make WP go gradually to 1 or 0 */
+      if (wpot > 0.3) {
+        dwpot = (1.0 - wpot)/n;
+      } else {
+        dwpot = - wpot/n;
+      }
     }
 
-    /*now drift the final n steps*/
+    /* now drift the final n steps */
     dx = vector_scale(v, setup->step_time_calc);
     if (new_pt.z > 0) {               // charges NOT on passivated surface
       for (i = 0; i < n; i++){

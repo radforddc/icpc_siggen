@@ -35,7 +35,13 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
     "ditch_depth",
     "ditch_thickness",
     "Li_thickness",
-    "vacuum_gap",
+    "pc_offset_x",
+    "pc_offset_y",
+    "hole_offset_x_top",
+    "hole_offset_y_top",
+    "hole_offset_x_bottom",
+    "hole_offset_y_bottom",
+
     "xtal_grid",
     "impurity_z0",
     "impurity_gradient",
@@ -177,15 +183,29 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
 	  setup->inner_taper_width = fi;
 	} else if (strstr(key_word[i], "hole_length")) {
 	  setup->hole_length = fi;
+          setup->hole_gap = setup->xtal_length - fi;
           /* the user can specify "hole_length_gap" = xtal_length - hole_length, instead of "hole_length" */
           if (strstr(line, "hole_length_gap")  && fi < setup->xtal_length) {
             setup->hole_length = setup->xtal_length - fi;
+            setup->hole_gap = fi;
             if (setup->verbosity >= CHATTY) printf("   -->  hole_length: %f\n", setup->hole_length);
           }
 	} else if (strstr(key_word[i], "hole_radius")) {
 	  setup->hole_radius = fi;
 	} else if (strstr(key_word[i], "hole_bullet_radius")) {
 	  setup->hole_bullet_radius = fi;
+	} else if (strstr(key_word[i], "pc_offset_x")) {
+	  setup->pc_offset_x = fi;
+	} else if (strstr(key_word[i], "pc_offset_y")) {
+	  setup->pc_offset_y = fi;
+	} else if (strstr(key_word[i], "hole_offset_x_top")) {
+	  setup->hole_offset_x_top = fi;
+	} else if (strstr(key_word[i], "hole_offset_y_top")) {
+	  setup->hole_offset_y_top = fi;
+	} else if (strstr(key_word[i], "hole_offset_x_bottom")) {
+	  setup->hole_offset_x_bottom = fi;
+	} else if (strstr(key_word[i], "hole_offset_y_bottom")) {
+	  setup->hole_offset_y_bottom = fi;
 	} else if (strstr(key_word[i], "wrap_around_radius")) {
 	  setup->wrap_around_radius = fi;
 	} else if (strstr(key_word[i], "ditch_depth")) {
@@ -194,8 +214,6 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
 	  setup->ditch_thickness = fi;
 	} else if (strstr(key_word[i], "Li_thickness")) {
 	  setup->Li_thickness = fi;
-	} else if (strstr(key_word[i], "vacuum_gap")) {
-	  setup->vacuum_gap = fi;
 	} else if (strstr(key_word[i], "xtal_grid")) {
 	  setup->xtal_grid = fi;
 	} else if (strstr(key_word[i], "impurity_z0")) {

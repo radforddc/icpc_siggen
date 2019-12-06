@@ -17,20 +17,18 @@
    returns 1 if pt is outside the detector, 0 if inside detector
 */
 int outside_detector(point pt, MJD_Siggen_Setup *setup){
-  float r, z, br, a, b;
+  float r, z, r1, z1, br, a, b;
 
   z = pt.z;
   if (z > setup->zmax || z < 0) return 1;
 
   r = sqrt(SQ(pt.x)+SQ(pt.y));
   if (r > setup->rmax) return 1;
+  r1 = setup->rmax - r;  // distance from outer radius
+  z1 = setup->zmax - z;  // distance from top of crystal
 
-  br = setup->top_bullet_radius;
-  if (z > setup->zmax - br && r > (setup->rmax - br) &&
-      SQ(r - setup->rmax + br) + SQ(z - setup->zmax + br) > br*br) return 1;
-
-  if (setup->pc_radius > 0 &&
-      z < setup->pc_length && r < setup->pc_radius) {
+  /* check point contact */
+  if (z < setup->pc_length && r < setup->pc_radius) {
     if (!setup->bulletize_PC) return 1;
     if (setup->pc_length > setup->pc_radius) {
       a = setup->pc_length - setup->pc_radius;
@@ -41,52 +39,60 @@ int outside_detector(point pt, MJD_Siggen_Setup *setup){
     }
     return 0;
   }
-  if (setup->bottom_taper_length > 0 && z < setup->bottom_taper_length &&
-      r > setup->zmax - setup->bottom_taper_length + z) return 1;
-  if (setup->ditch_depth > 0 && z < setup->ditch_depth  &&
+  /* check ditch */
+  if (z < setup->ditch_depth  &&
       setup->ditch_thickness > 0 && setup->wrap_around_radius > 0 &&
       r < setup->wrap_around_radius &&
       r > setup->wrap_around_radius - setup->ditch_thickness) return 1;
 
   /* check hole */
-  if (r < setup->hole_radius &&
-      z > setup->zmax - setup->hole_length) {
+  if ( r < setup->hole_radius &&
+      z1 < setup->hole_length) {
     b = setup->zmax - setup->hole_length + setup->hole_bullet_radius;
     if (z > b) return 1;
     a = setup->hole_radius - setup->hole_bullet_radius;
     if (r < a || SQ(b-z) + SQ(r-a) < SQ(setup->hole_bullet_radius)) return 1;
-    return 0;
   }
-
-  /* check outer taper of crystal */
-  if (setup->outer_taper_length > 0 &&
-      z > setup->zmax - setup->outer_taper_length &&
-      r > setup->rmax - ((z - setup->zmax + setup->outer_taper_length) *
-                         setup->outer_taper_width / setup->outer_taper_length)) return 1;
   /* check inner taper of hole */
-  if (setup->inner_taper_length > 0 &&
-      z > setup->zmax - setup->inner_taper_length &&
-      r < setup->hole_radius + ((z - setup->zmax + setup->inner_taper_length) *
-                         setup->inner_taper_width / setup->inner_taper_length)) return 1;
+  if (z1 < setup->inner_taper_length &&
+      r  < setup->hole_radius +
+            ((setup->inner_taper_length - z1) *
+              setup->inner_taper_width / setup->inner_taper_length)) return 1;      
+  /* check outer taper of crystal */
+  if (z1 < setup->outer_taper_length &&
+      r1 < ((setup->outer_taper_length - z1) *
+              setup->outer_taper_width / setup->outer_taper_length)) return 1;
+  /* check 45-degree bottom outer taper of crystal */
+  if ( z < setup->bottom_taper_length &&
+      r1 < setup->bottom_taper_length - z) return 1;
+
+  /* check bulletizations */
+  br = setup->top_bullet_radius;
+  if (z1 < br &&
+      r1 < br &&
+      SQ(br - r1) + SQ(br - z1) > br*br) return 1;
+  br = setup->bottom_bullet_radius;
+  if ( z > br &&
+      r1 < br &&
+      SQ(br - r1) + SQ(br - z ) > br*br) return 1;
 
   return 0;
 }
 
 int outside_detector_cyl(cyl_pt pt, MJD_Siggen_Setup *setup){
-  float r, z, br, a, b;
+  float r, z, r1, z1, br, a, b;
 
   z = pt.z;
   if (z > setup->zmax || z < 0) return 1;
 
   r = pt.r;
+  if (r < 0) r = -r;
   if (r > setup->rmax) return 1;
+  r1 = setup->rmax - r;  // distance from outer radius
+  z1 = setup->zmax - z;  // distance from top of crystal
 
-  br = setup->top_bullet_radius;
-  if (z > setup->zmax - br && r > (setup->rmax - br) &&
-      SQ(r - setup->rmax + br) + SQ(z - setup->zmax + br) > br*br) return 1;
-
-  if (setup->pc_radius > 0 &&
-      z < setup->pc_length && r < setup->pc_radius) {
+  /* check point contact */
+  if (z < setup->pc_length && r < setup->pc_radius) {
     if (!setup->bulletize_PC) return 1;
     if (setup->pc_length > setup->pc_radius) {
       a = setup->pc_length - setup->pc_radius;
@@ -97,32 +103,42 @@ int outside_detector_cyl(cyl_pt pt, MJD_Siggen_Setup *setup){
     }
     return 0;
   }
-  if (setup->bottom_taper_length > 0 && z < setup->bottom_taper_length &&
-      r > setup->zmax - setup->bottom_taper_length + z) return 1;
-  if (setup->ditch_depth > 0 && z < setup->ditch_depth  &&
+  /* check ditch */
+  if (z < setup->ditch_depth  &&
       setup->ditch_thickness > 0 && setup->wrap_around_radius > 0 &&
       r < setup->wrap_around_radius &&
       r > setup->wrap_around_radius - setup->ditch_thickness) return 1;
 
   /* check hole */
-  if (r < setup->hole_radius &&
-      z > setup->zmax - setup->hole_length) {
+  if ( r < setup->hole_radius &&
+      z1 < setup->hole_length) {
     b = setup->zmax - setup->hole_length + setup->hole_bullet_radius;
     if (z > b) return 1;
     a = setup->hole_radius - setup->hole_bullet_radius;
     if (r < a || SQ(b-z) + SQ(r-a) < SQ(setup->hole_bullet_radius)) return 1;
   }
-      
-  /* check outer taper of crystal */
-  if (setup->outer_taper_length > 0 &&
-      z > setup->zmax - setup->outer_taper_length &&
-      r > setup->rmax - ((z - setup->zmax + setup->outer_taper_length) *
-                         setup->outer_taper_width / setup->outer_taper_length)) return 1;
   /* check inner taper of hole */
-  if (setup->inner_taper_length > 0 &&
-      z > setup->zmax - setup->inner_taper_length &&
-      r < setup->hole_radius + ((z - setup->zmax + setup->inner_taper_length) *
-                         setup->inner_taper_width / setup->inner_taper_length)) return 1;
+  if (z1 < setup->inner_taper_length &&
+      r  < setup->hole_radius +
+            ((setup->inner_taper_length - z1) *
+              setup->inner_taper_width / setup->inner_taper_length)) return 1;      
+  /* check outer taper of crystal */
+  if (z1 < setup->outer_taper_length &&
+      r1 < ((setup->outer_taper_length - z1) *
+              setup->outer_taper_width / setup->outer_taper_length)) return 1;
+  /* check 45-degree bottom outer taper of crystal */
+  if ( z < setup->bottom_taper_length &&
+      r1 < setup->bottom_taper_length - z) return 1;
+
+  /* check bulletizations */
+  br = setup->top_bullet_radius;
+  if (z1 < br &&
+      r1 < br &&
+      SQ(br - r1) + SQ(br - z1) > br*br) return 1;
+  br = setup->bottom_bullet_radius;
+  if ( z < br &&
+      r1 < br &&
+      SQ(br - r1) + SQ(br - z ) > br*br) return 1;
 
   return 0;
 }

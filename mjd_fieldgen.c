@@ -16,9 +16,16 @@
       - added over-relaxation factor; gained factor of ~ 40 speedup, depending on size/grid
       - added code to estimate full-depletion voltage in the case of bubble depletion (pinch-off)
 
-   TO DO:
-      - add other bulletizations
+   Nov 2019
+      - major rewrite and re-arragement of the code
+      - broke out functions grid_init, ev_calc, wp_calc, write_ev, write_wp, do_relax, interpolate
+      - got an additional factor of ~3 speedup
+      - more modular and readable
+      - todo now: 
+          - add back in interpolation of point contact
+          - execute WD=1 option
 
+   TO DO:
       - on coarse grids, interpolate the position of L, R, LT, and the ditch
             (as is done now already for RC and LC)
 */
@@ -33,51 +40,25 @@
 
 #define MAX_ITS 50000     // default max number of iterations for relaxation
 #define MAX_ITS_FACTOR 2  // factor by which max iterations is reduced as grid is refined
-#define OT_R  R - (int) (0.5 + (float)(z-L+OTL) * (float)OTW / (float)OTL)  // outer radius due to taper 
-#define IT_R  (RH + (int) (0.5 + (float)(z-L+HTL) * (float)HTW / (float)HTL))  // inner radius due to taper
-#define OT_R_TBR  ((TBR > 0 && TBR < OTL) ? R - LiT - (int) (0.5 + (float)(OTL-TBR) * (float)OTW / (float)OTL) : R - LiT)
-#define TBR_TEST  ((TBR > 0 && r > OT_R_TBR - TBR && z > L-TBR && \
-                   (r-OT_R_TBR+TBR)*(r-OT_R_TBR+TBR) + (z-L+LiT+TBR)*(z-L+LiT+TBR) > TBR*TBR)) // test for top bulletization
-#define BBR_TEST  ((BBR > 0 && r > R-LiT-BBR && z < BBR + LiT && \
-                   (r-R+LiT+BBR)*(r-R+LiT+BBR) + (z-BBR-LiT)*(z-BBR-LiT) > BBR*BBR))     // test for bottom bulletization
 
-// #define OVER_RELAX_FACTOR 0.98
-// the following definition of the factor for over-relaxation improves convergence time by a factor ~ 70 for a 2kg ICPC detector
-#define OVER_RELAX_FACTOR (0.976 + 0.006 * (double) istep)
-// #define OVER_RELAX_FACTOR (0.988 * (1.0 - 1.0/(double)(1+iter/4)))
+static int report_config(FILE *fp_out, char *config_file_name);
+static int grid_init(MJD_Siggen_Setup *setup);
+static int ev_calc(MJD_Siggen_Setup *setup, MJD_Siggen_Setup *old_setup);
+static int wp_calc(MJD_Siggen_Setup *setup, MJD_Siggen_Setup *old_setup);
+static int write_ev(MJD_Siggen_Setup *setup);
+static int write_wp(MJD_Siggen_Setup *setup);
+static int do_relax(MJD_Siggen_Setup *setup, int ev_calc);
+static int ev_relax_undep(MJD_Siggen_Setup *setup);
+static int wp_relax_undep(MJD_Siggen_Setup *setup);
+static int interpolate(MJD_Siggen_Setup *setup, MJD_Siggen_Setup *old_setup);
 
-
-int report_config(FILE *fp_out, char *config_file_name);
-
-
+/* -------------------------------------- main ------------------- */
 int main(int argc, char **argv)
 {
 
-  MJD_Siggen_Setup setup;
+  MJD_Siggen_Setup setup, setup1, setup2;
 
-  /* --- default values, normally over-ridden by values in a *.conf file --- */
-  int   R  = 0;  // radius of detector, in grid lengths
-  int   L  = 0;  // length of detector, in grid lengths
-  int   RC = 0;  // radius of central contact, in grid lengths
-  int   LC = 0;  // length of central contact, in grid lengths
-  int   LT = 0;  // length of taper, in grid lengths
-  int   RO = 0;  // radius of wrap-around outer (Li) contact, in grid lengths
-  int   LO = 0;  // length of ditch next to wrap-around outer (Li) contact, in grid lengths
-  int   WO = 0;  // width of ditch next to wrap-around outer (Li) contact, in grid lengths
-
-  int   RH  = 10; // radius of core hole in outer (Li) contact, in grid lengths
-  int   LH  = 80; // length of core hole in outer (Li) contact, in grid lengths
-  int   HBR = 5;  // bulletization radius at bottom of hole
-  int   OTL = 80; // length of outer radial taper of crystal, in grid lengths
-  int   OTW = 10; // width/amount of outer radial taper (decrease in radius), in grid lengths
-  int   HTL = 0;  // length of radial tapered part of core hole, in grid lengths
-  int   HTW = 0;  // width/amount of radial taper (increase in radius) of hole, in grid lengths
-
-  int   TBR = 0; // radius of bulletization at top of crystal
-  float BV = 0;  // bias voltage
-  float N = 1;   // charge density at z=0 in units of e+10/cm3
-  float M = 0;   // charge density gradient, in units of e+10/cm4
-
+  float BV;      // bias voltage
   int   WV = 0;  // 0: do not write the V and E values to ppc_ev.dat
                  // 1: write the V and E values to ppc_ev.dat
                  // 2: write the V and E values for both +r, -r (for gnuplot, NOT for siggen)
@@ -85,1201 +66,165 @@ int main(int argc, char **argv)
                  // 1: calculate the WP and write the values to ppc_wp.dat
   int   WD = 0;  // 0: do not write out depletion surface
                  // 1: write out depletion surface to depl_<HV>.dat
-  /* ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  --- */
 
-  double **v[2], **eps, **eps_dr, **eps_dz, **vfraction, *s1, *s2;
-  char   **undepleted, config_file_name[256], fname[256];
-  int    **bulk, *rrc, *rrh;
-  float  *drrc, *frrc; //, *drrh, *frrh;
-  double eps_sum, v_sum, mean, min, f, f1z, f2z, f1r, f2r;
-  double e_over_E = 11.31; // e/epsilon
-                           // for 1 mm2, charge units 1e10 e/cm3, espilon = 16*epsilon0
-  float  dif, sum_dif=0, max_dif, a, b, c, grid = 0.5, dRC, dLC, fLC=0; //, dRH;
-  float  E, E_r, E_z, bubble_volts=0, cs, gridstep[3], Emin, rmin, zmin;
-  int    i, j, r, z, iter, old, new=0, zz, rr, istep, max_its;
-  FILE   *file;
-  time_t t0=0, t1, t2=0;
-  double esum, esum2, pi=3.14159, Epsilon=(8.85*16.0/1000.0);  // permittivity of Ge in pF/mm
-  double pinched_sum1, pinched_sum2, *imp_ra, *imp_rm, *imp_z, S=0;
-  int    gridfact, fully_depleted=0, LL=L, RR=R, LiT=0, BBR=0, zmax, rmax, vminr=0, vminz=0;
-  double **vsave;
-  double min2, dVn[4], dWn[4], test, save_dif;
-  int    vminr2=0, vminz2=0;
-  FILE   *fp;
-  float  rho_z[256] = {0};
+  int   i, j;
+  FILE  *fp;
 
 
-  if (argc%2 != 1) {
-    printf("Possible options:\n"
-	   "      -c config_file_name\n"
+  if (argc < 2 || argc%2 != 0 || read_config(argv[1], &setup)) {
+    printf("Usage: %s <config_file_name> [options]\n"
+           "   Possible options:\n"
 	   "      -b bias_volts\n"
-	   "      -w {0,1}    (do_not/do write the field file)\n"
-	   "      -d {0,1}    (do_not/do write the depletion surface)\n"
-	   "      -p {0,1}    (do_not/do write the WP file)\n"
-           "      -r rho_spectrum_file_name\n");
+	   "      -w {0,1}  do_not/do write the field file)\n"
+	   "      -d {0,1}  do_not/do write the depletion surface)\n"
+	   "      -p {0,1}  do_not/do write the WP file)\n"
+           "      -r rho_spectrum_file_name\n", argv[0]);
     return 1;
   }
+  strncpy(setup.config_file_name, argv[1], sizeof(setup.config_file_name));
 
-  for (i=1; i<argc-1; i+=2) {
-    if (strstr(argv[i], "-c")) {
-      if (read_config(argv[i+1], &setup)) return 1;
-      strncpy(config_file_name, argv[i+1], sizeof(config_file_name));
+  if (setup.xtal_grid < 0.001) setup.xtal_grid = 0.5;
+  BV = setup.xtal_HV;
+  WV = setup.write_field;
+  WP = setup.write_WP;
+  setup.rho_z_spe[0] = 0;
 
-      if (setup.xtal_grid < 0.001) setup.xtal_grid = 0.5;
-      grid = setup.xtal_grid;
-
-      L  = LL = lrint(setup.xtal_length/grid);
-      R  = RR = lrint(setup.xtal_radius/grid);
-      LC = lrint(setup.pc_length/grid);
-      RC = lrint(setup.pc_radius/grid);
-      RO = lrint(setup.wrap_around_radius/grid);
-      LO = lrint(setup.ditch_depth/grid);
-      WO = lrint(setup.ditch_thickness/grid);
-      LT = lrint(setup.bottom_taper_length/grid);
-
-      LH = lrint(setup.hole_length/grid);
-      RH = lrint(setup.hole_radius/grid);
-      HBR = lrint(setup.hole_bullet_radius/grid);
-      OTL = lrint(setup.outer_taper_length/grid);
-      OTW = lrint(setup.outer_taper_width/grid);
-      HTL = lrint(setup.inner_taper_length/grid);
-      HTW = lrint(setup.inner_taper_width/grid);
-      LiT = lrint(setup.Li_thickness/grid);
-      TBR = lrint(setup.top_bullet_radius/grid);
-      BBR = lrint(setup.bottom_bullet_radius/grid);
-      N  = setup.impurity_z0;
-      M  = setup.impurity_gradient;
-      BV = setup.xtal_HV;
-      WV = setup.write_field;
-      WP = setup.write_WP;
-
-    } else if (strstr(argv[i], "-b")) {
-      BV = atof(argv[i+1]);   // bias volts
+  for (i=2; i<argc-1; i++) {
+    if (strstr(argv[i], "-b")) {
+      BV = setup.xtal_HV = atof(argv[++i]);   // bias volts
     } else if (strstr(argv[i], "-w")) {
-      WV = atoi(argv[i+1]);   // write-out options
+      WV = atoi(argv[++i]);   // write-out options
     } else if (strstr(argv[i], "-d")) {
-      WD = atoi(argv[i+1]);   // write-out options
+      WD = atoi(argv[++i]);   // write-out options
     } else if (strstr(argv[i], "-p")) {
-      WP = atoi(argv[i+1]);   // weighting-potential options
+      WP = atoi(argv[++i]);   // weighting-potential options
     } else if (strstr(argv[i], "-r")) {
-      if (!(fp = fopen(argv[i+1], "r"))) {   // impurity-profile-spectrum file name
+      if (!(fp = fopen(argv[++i], "r"))) {   // impurity-profile-spectrum file name
         printf("\nERROR: cannot open impurity profile spectrum file %s\n\n", argv[i+1]);
         return 1;
       }
-      fread(rho_z, 36, 1, fp);
-      fread(rho_z, sizeof(rho_z), 1, fp);
+      fread(setup.rho_z_spe, 36, 1, fp);
+      for (j=0; j<1024; j++) setup.rho_z_spe[i] = 0;
+      fread(setup.rho_z_spe, sizeof(setup.rho_z_spe), 1, fp);
       fclose(fp);
       printf(" z(mm)   rho\n");
-      for (i=0; i < 200 && rho_z[i] != 0.0f; i++)  printf(" %3d  %7.3f\n", i, rho_z[i]);
+      for (j=0; j < 200 && setup.rho_z_spe[j] != 0.0f; j++)
+        printf(" %3d  %7.3f\n", j, setup.rho_z_spe[j]);
     } else {
       printf("Possible options:\n"
-	     "      -c config_file_name\n"
 	     "      -b bias_volts\n"
-	     "      -w {0,1,2}    (for WV options)\n"
-	     "      -p {0,1}      (for WP options)\n");
+	     "      -w {0,1,2} (for WV options)\n"
+	     "      -p {0,1}   (for WP options)\n"
+             "      -r rho_spectrum_file_name\n");
       return 1;
     }
   }
 
-  if (L <= 1 || R <= 1) {
-    printf("ERROR: No configuration file specified.\n"
-	   "Possible options:\n"
-	   "      -c config_file_name\n"
-	   "      -b bias_volts\n"
-	   "      -w {0,1,2}    (for WV options)\n"
-	   "      -p {0,1}      (for WP options)\n");
-    return 1;
-  }
-  if (L*R > 2500*2500) {
+  if (setup.xtal_length/setup.xtal_grid * setup.xtal_radius/setup.xtal_grid > 2500*2500) {
     printf("Error: Crystal size divided by grid size is too large!\n");
     return 1;
   }
   if (WV < 0 || WV > 2) WV = 0;
 
-  printf("\n\n"
-         "      Crystal: Radius x Length: %.1f x %.1f mm\n"
-         " Bottom taper: %.1f mm\n",
-	   grid * (float) R, grid * (float) L, grid * (float) LT);
-  if (LH > 0) {
-    if (HTL > 0)
-      printf("    Core hole: Radius x length: %.1f x %.1f mm,"
-             " taper %.1f x %.1f mm (%2.f degrees)\n",
-             grid * (float) RH, grid * (float) LH,
-             grid * (float) HTW, grid * (float) HTL, setup.taper_angle);
-    else
-      printf("    Core hole: Radius x length: %.1f x %.1f mm\n",
-             grid * (float) RH, grid * (float) LH);
+  /* -------------- give details of detector geometry */
+  if (setup.verbosity >= CHATTY) {
+    printf("\n\n"
+           "      Crystal: Radius x Length: %.1f x %.1f mm\n",
+	   setup.xtal_radius, setup.xtal_length);
+    if (setup.hole_length > 0) {
+      if (setup.inner_taper_length > 0)
+        printf("    Core hole: Radius x length: %.1f x %.1f mm,"
+               " taper %.1f x %.1f mm (%2.f degrees)\n",
+               setup.hole_radius, setup.hole_length,
+               setup.inner_taper_width, setup.inner_taper_length, setup.taper_angle);
+      else
+        printf("    Core hole: Radius x length: %.1f x %.1f mm\n",
+               setup.hole_radius, setup.hole_length);
+    }
+    printf("Point contact: Radius x length: %.1f x %.1f mm\n",
+           setup.pc_radius, setup.pc_length);
+    if (setup.ditch_depth > 0) {
+      printf("  Wrap-around: Radius x ditch x gap:  %.1f x %.1f x %.1f mm\n",
+             setup.wrap_around_radius, setup.ditch_depth, setup.ditch_thickness);
+    }
+    printf("         Bias: %.0f V\n", BV);
   }
-  if (OTL > 0) {
-    printf("Outside taper: %.1f mm over %.1f mm (%.2f degrees)\n\n",
-           grid * (float) OTW, grid * (float) OTL, setup.taper_angle);
-  } else if (LH <= 0) {
-    printf("  No core hole or outside taper.\n");
-  } else {
-    printf("  No outside taper.\n");
-  }
-  if (LiT > 0) {
-    printf("Li contact thickness: %.1f mm\n\n", grid * (float) LiT);
-  }
-
-  if (LC > 0 && setup.bulletize_PC) {
-    printf("      Contact: Radius x length: %.1f x %.1f mm, bulletized\n",
-	   grid * (float) RC, grid * (float) LC);
-  } else if (LC > 0) {
-    printf("      Contact: Radius x length: %.1f x %.1f mm, not bulletized\n",
-	   grid * (float) RC, grid * (float) LC);
-  } else {
-    printf("      Contact: Radius x length: %.1f x %.1f mm\n",
-	   grid * (float) RC, grid * (float) LC);
-  }
-  if (RO <= 0.0 || RO >= R) {
-    // RO = R - LT/3;    // inner radius of bottom taper, in grid lengths
-    RO = R - LT;    // inner radius of bottom taper, in grid lengths
-    printf(" No wrap-around contact or ditch...\n");
-  } else {
-    printf("  Wrap-around: Radius x ditch x gap:  %.1f x %.1f x %.1f mm\n",
-	   grid * (float) RO, grid * (float) LO, grid * (float) WO);
-  }
-  printf("         Bias: %.0f V\n"
-         "   Impurities: (%.3f + %.3fz) e10/cm3\n\n",
-         BV, N, M);
-
-    if ((BV < 0 && N < 0) || (BV > 0 && N > 0)) {
+    
+  if ((BV < 0 && setup.impurity_z0 < 0) || (BV > 0 && setup.impurity_z0 > 0)) {
     printf("ERROR: Expect bias and impurity to be opposite sign!\n");
     return 1;
-  }
-  if (TBR > 0)
-    printf("   Radius of top-of-crystal bulletization is %.1f mm\n\n", grid * (float) TBR);
-
-  if (N > 0) {
+  } 
+  if (setup.impurity_z0 > 0) {
     // swap polarity for n-type material; this lets me assume all voltages are positive
     BV = -BV;
-    M = -M;
-    N = -N;
+    setup.xtal_HV *= -1.0;
+    setup.impurity_z0         *= -1.0;
+    setup.impurity_gradient   *= -1.0;
+    setup.impurity_quadratic  *= -1.0;
+    setup.impurity_surface    *= -1.0;
+    setup.impurity_radial_add *= -1.0;
   }
-
-  setup.hole_bullet_radius += setup.Li_thickness;  // adjust hole bulletization
-  setup.hole_length += setup.Li_thickness;         // and hole length for Li thickness
-
-  /* malloc arrays
-     float v[2][L+5][R+5];
-     float eps[L+1][R+1], eps_dr[L+1][R+1], eps_dz[L+1][R+1];
-     float vfraction[L+1][R+1], s1[R], s2[R], drrc[LC+2], drrc[LC+2], drrh[L+1], drrh[L+1];
-     char  undepleted[R+1][L+1];
-     int   bulk[L+1][R+1], rrc[LC+2], rrh[L+1];
-  */
-  if ((v[0]   = malloc((L+5)*sizeof(*v[0]))) == NULL ||
-      (v[1]   = malloc((L+5)*sizeof(*v[1]))) == NULL ||
-      (eps    = malloc((L+1)*sizeof(*eps)))  == NULL ||
-      (eps_dr = malloc((L+1)*sizeof(*eps_dr))) == NULL ||
-      (eps_dz = malloc((L+1)*sizeof(*eps_dz))) == NULL ||
-      (bulk   = malloc((L+1)*sizeof(*bulk)))   == NULL ||
-      (vfraction  = malloc((L+1)*sizeof(*vfraction)))  == NULL ||
-      (undepleted = malloc((R+1)*sizeof(*undepleted))) == NULL ||
-      (imp_ra = malloc((R+1)*sizeof(*imp_ra))) == NULL ||
-      (imp_rm = malloc((R+1)*sizeof(*imp_rm))) == NULL ||
-      (imp_z = malloc((L+1)*sizeof(*imp_z))) == NULL ||
-      (rrc   = malloc((LC+2)*sizeof(*rrc)))  == NULL ||
-      (drrc  = malloc((LC+2)*sizeof(*drrc))) == NULL ||
-      (frrc  = malloc((LC+2)*sizeof(*frrc))) == NULL ||
-      (rrh   = malloc((L+1)*sizeof(*rrh)))  == NULL ||
-      //(drrh  = malloc((L+1)*sizeof(*drrh))) == NULL ||
-      //(frrh  = malloc((L+1)*sizeof(*frrh))) == NULL ||
-      (s1 = malloc((R+1)*sizeof(*s1))) == NULL ||
-      (s2 = malloc((R+1)*sizeof(*s2))) == NULL ||
-      //(vsave = malloc((LC+2)*sizeof(*vsave))) == NULL
-      (vsave = malloc((L)*sizeof(*vsave))) == NULL
-      ) {
-    printf("Malloc failed\n");
+  /* use an adaptive grid; start out coarse and then refine the grid */
+  memcpy(&setup1, &setup, sizeof(setup));
+  memcpy(&setup2, &setup, sizeof(setup));
+  setup1.xtal_grid *= 9.0;
+  setup2.xtal_grid *= 3.0;
+  if (grid_init(&setup1) != 0 ||
+      grid_init(&setup2) != 0 ||
+      grid_init(&setup)  != 0) {
+    printf("failed to init field calculations\n");
     return 1;
   }
-#define ERR { printf("Malloc failed; j = %d\n", j); return 1; }
-  for (j=0; j<L+1; j++) if ((v[0][j] = malloc((R+5)*sizeof(**v[0]))) == NULL) ERR;
-  for (j=0; j<L+1; j++) if ((v[1][j] = malloc((R+5)*sizeof(**v[1]))) == NULL) ERR;
-  for (j=0; j<L+1; j++) if ((eps[j]  = malloc((R+1)*sizeof(**eps)))  == NULL) ERR;
-  for (j=0; j<L+1; j++) if ((eps_dr[j] = malloc((R+1)*sizeof(**eps_dr))) == NULL) ERR;
-  for (j=0; j<L+1; j++) if ((eps_dz[j] = malloc((R+1)*sizeof(**eps_dz))) == NULL) ERR;
-  for (j=0; j<L+1; j++) if ((bulk[j] = malloc((R+1)*sizeof(**bulk))) == NULL) ERR;
-  for (j=0; j<L+1; j++) if ((vfraction[j] = malloc((R+1)*sizeof(**vfraction))) == NULL) ERR;
-  //for (j=0; j<LC+2; j++) if ((vsave[j]  = malloc((RC+2)*sizeof(**vsave)))  == NULL) ERR;
-  for (j=0; j<L; j++) if ((vsave[j]  = malloc((R)*sizeof(**vsave)))  == NULL) ERR;
-  for (j=0; j<R+1; j++) {
-    if ((undepleted[j] = malloc((L+1)*sizeof(**undepleted))) == NULL) ERR;
-    memset(undepleted[j], ' ', (L+1)*sizeof(**undepleted));
-  }
-  for (r=0; r<R+1; r++) {
-    imp_ra[r] = 0.0;
-    imp_rm[r] = 1.0;
-  }
 
-  /* In the following we divide areas and volumes by pi
-    r_bin   rmax  A_top A_outside A_inside  volume  total_surf  out/top  tot/vol
-      0     1/2    1/4      1         0       1/4      1.5         4        6  << special case
-      1     3/2      2      3         1        2        8        3/2        4
-      2     5/2      4      5         3        4       16        5/4        4
-      3     7/2      6      7         5        6       24        7/6        4
-      r   r+0.5     2r    2r+1      2r-1      2r       8r     (2r+1)/2r     4
-                                                              = 1+0.5/r
-  */
-  // weighting values for the relaxation alg. as a function of r
-  s1[0] = 4.0;
-  s2[0] = 0.0;
-  for (r=1; r<R+1; r++) {
-    s1[r] = 1.0 + 0.5 / (double) r;   //  for r+1
-    s2[r] = 1.0 - 0.5 / (double) r;   //  for r-1
-  }
-
-  /*
-    If grid is too small compared to the crystal size, then it will take too
-    long for the relaxation to converge. In that case, we use an adaptive
-    grid, where we start out coarse and then refine the grid.
-  */
-  cs = sqrt(setup.xtal_length * setup.xtal_radius);
-  i = 1 + ((int) (cs/grid)) / 100;
-  if (i < 2) {
-    gridstep[0] = grid;
-    gridstep[1] = gridstep[2] = 0;
-    printf("Single grid size: %.4f\n", grid);
-  } else if (i < 6) {
-    gridstep[0] = (float) i * grid;
-    gridstep[1] = grid;
-    gridstep[2] = 0;
-    printf("Two grid sizes: %.4f %.4f\n", gridstep[0], grid);
-  } else {  // i > 5
-    j = (i+4)/5;
-    i = (i+j-1)/j;
-    gridstep[0] = (float) (i*j) * grid;
-    gridstep[1] = (float) j * grid;
-    gridstep[2] = grid;
-    printf("Three grid sizes: %.4f %.4f %.4f (%d %d)\n",
-	   gridstep[0], gridstep[1], grid, i, j);
-  }
-
-  /* to be safe, initialize overall potential to bias voltage */
-  for (z=0; z<LL+1; z++) {
-    for (r=0; r<RR+1; r++) {
-      v[0][z][r] = v[1][z][r] = BV;
-    }
-  }
-  if (setup.verbosity >= CHATTY)
-    t0 = t2 = time(NULL);  // for calculating elapsed time later...
-  max_its = MAX_ITS;
-  if (setup.max_iterations > 0) max_its = setup.max_iterations;
-  /* now set up and perform the relaxation for each of the grid step sizes in turn */
-  for (istep=0; istep<3 && gridstep[istep]>0; istep++) {
-    grid = gridstep[istep]; // grid size for this go-around
-    old = 1;
-    new = 0;
-    /*  e/espilon * area of pixel in mm2 / 4
-	for 1 mm2, charge units 1e10 e/cm3, espilon = 16*epsilon0
-	4.0 = surface area / volume of voxel in cylindrical (2D) coords
-	(this would be 6.0 in cartesian coords) */
-    e_over_E = 11.31 * grid*grid / 4.0;
-
-    if (istep > 0) {
-      /* not the first go-around, so the previous calculation was on a coarser grid...
-	 now copy/expand the potential to the new finer grid
-      */
-      i = (int) (gridstep[istep-1] / gridstep[istep] + 0.5);
-      f = 1.0 / (float) i;
-      printf("\ngrid %.4f -> %.4f; ratio = %d %.3f\n\n",
-	     gridstep[istep-1], gridstep[istep], i, f);
-      for (z=0; z<L+1; z++) {
-	for (r=0; r<R+1; r++) {
-	  f1z = 0.0;
-	  zmax = i*z+i;
-	  if (zmax > LL+1) zmax = LL+1;
-	  for (zz=i*z; zz<zmax; zz++) {
-	    f2z = 1.0 - f1z;
-	    f1r = 0.0;
-	    rmax = i*r+i;
-	    if (rmax > RR+1) rmax = RR+1;
-	    for (rr=i*r; rr<rmax; rr++) {
-	      f2r = 1.0 - f1r;
-	      v[0][zz][rr] =      // linear interpolation of potential
-		f2z*f2r*v[1][z][r  ] + f1z*f2r*v[1][z+1][r  ] +
-		f2z*f1r*v[1][z][r+1] + f1z*f1r*v[1][z+1][r+1];
-	      f1r += f;
-	    }
-	    f1z += f;
-	  }
-	}
-      }
-    }
-
-    // recalculate geometry dimensions in units of the current grid size
-    L  = lrint(setup.xtal_length/grid);
-    R  = lrint(setup.xtal_radius/grid);
-    LiT = lrint(setup.Li_thickness/grid);
-    TBR = lrint(setup.top_bullet_radius/grid);
-    BBR = lrint(setup.bottom_bullet_radius/grid);
-    LC = lrint(setup.pc_length/grid);
-    // distance in grid units from PC length to the middle of the nearest pixel:
-    dLC = setup.pc_length/grid - (float) LC;
-    if (dLC < 0.01 && dLC > -0.01) dLC = 0;
-    RC = lrint(setup.pc_radius/grid);
-    // distance in grid units from PC radius to the middle of the nearest pixel:
-    dRC = setup.pc_radius/grid - (float) RC;
-    if (dRC < 0.05 && dRC > -0.05) dRC = 0;
-    /* set up bulletization inside point contact */
-    if (setup.bulletize_PC) {
-      for (z=0; z<=LC; z++) {
-        if (setup.pc_length <= setup.pc_radius) {  // LC <= RC; use LC as bulletization radius
-          a = setup.pc_radius - setup.pc_length;
-          b = z * grid;
-          c = setup.pc_length*setup.pc_length - b*b;
-          if (c < 0.0) c = 0;
-          c = a + sqrt(c);
-        } else {  // LC > RC; use RC as bulletization radius
-          if (z > LC-RC) {
-            a = setup.pc_length - setup.pc_radius;
-            b = z * grid - a;
-            c = setup.pc_radius*setup.pc_radius - b*b;
-            if (c < 0.0) c = 0;
-            c = sqrt(c);
-          } else {
-            c = setup.pc_radius;
-          }
-        }
-        rrc[z] = lrint(c/grid);
-        drrc[z] = c/grid - (float) rrc[z];
-        if (drrc[z] < 0.05 && drrc[z] > -0.05) drrc[z] = 0;
-        frrc[z] = 0;
-        // printf(">> z rrc drrc: %d %d %f\n", z, rrc[z], drrc[z]);
-      }
-      drrc[LC+1] = drrc[LC];
-    } else {  // no bulletization
-      for (z=0; z<=LC+1; z++) {
-        rrc[z] = RC;
-        drrc[z] = dRC;
-        frrc[z] = 0;
-      }
-    }
-    
-    LT = lrint(setup.bottom_taper_length/grid);
-    RO = lrint(setup.wrap_around_radius/grid);
-    LO = lrint(setup.ditch_depth/grid);
-    WO = lrint(setup.ditch_thickness/grid);
-    LH = lrint(setup.hole_length/grid);
-    RH = lrint(setup.hole_radius/grid);
-    HBR = lrint(setup.hole_bullet_radius/grid);
-    OTL = lrint(setup.outer_taper_length/grid);
-    OTW = lrint(setup.outer_taper_width/grid);
-    HTL = lrint(setup.inner_taper_length/grid);
-    HTW = lrint(setup.inner_taper_width/grid);
-
-    /* set up bulletization inside hole */
-    //dRH = setup.hole_radius/grid - (float) RH;
-    //if (dRC < 0.05 && dRC > -0.05) dRC = 0;
-    for (z=L-LH; z<=L; z++) {
-      rrh[z] = RH;
-      //drrh[z] = dRH;
-      //frrh[z] = 0;
-    }
-    if (LH > 0 && RH > 0 && HBR > 0) {
-      for (z=L-LH; z<L-LH+HBR+2; z++) {
-        a = setup.hole_radius - setup.hole_bullet_radius;
-        b = setup.xtal_length - setup.hole_length + setup.hole_bullet_radius - z*grid;
-        c = setup.hole_bullet_radius*setup.hole_bullet_radius - b*b;
-        if (c < 0.0) c = 0;
-        c = a + sqrt(c);
-        rrh[z] = lrint(c/grid);
-        //drrh[z] = c/grid - (float) rrc[z];
-        //if (drrh[z] < 0.05 && drrh[z] > -0.05) drrh[z] = 0;
-        //frrh[z] = 0;
-      }
-    }
-
-    S = setup.impurity_surface * e_over_E / grid;
-    if (rho_z[0] != 0) {
-      for (z=0; z<L+1; z++) {
-        imp_z[z] = rho_z[(int)(grid * (double) z + 0.5)] * e_over_E;
-      }
+  /* -------------- calculate electric potential/field */
+  if (setup.write_field) {
+    setup1.write_field = 0; // no need to save intermediate calculations
+    setup2.write_field = 0;
+    if (setup.xtal_grid > 0.4) {
+      ev_calc(&setup2, NULL);
     } else {
-      for (z=0; z<L+1; z++) {
-        imp_z[z] = (N + 0.1 * M * grid * (double) z + 
-                    setup.impurity_quadratic * (1.0 - (double) ((z-L/2)*(z-L/2)) /
-                                                (double) (L*L/4))) * e_over_E;
-        // if (istep == 0) printf("%.2f %.3f %.3f\n", z*grid, imp_z[z]/e_over_E, N + 0.1 * M * grid * (double) z);
-      }
+      ev_calc(&setup1, NULL);
+      ev_calc(&setup2, &setup1);
     }
-    if (setup.impurity_rpower > 0.1) {
-      for (r=0; r<R+1; r++) {
-	imp_ra[r] = setup.impurity_radial_add * e_over_E *
-	  pow((double) r / (double) R, setup.impurity_rpower);
-	imp_rm[r] = 1.0 + (setup.impurity_radial_mult - 1.0f) *
-	  pow((double) r / (double) R, setup.impurity_rpower);
-      }
-    }
-    if (setup.verbosity >= NORMAL)
-      printf("grid = %f  RC = %d  dRC = %f  LC = %d  dLC = %f\n\n",
-	     grid, RC, dRC, LC, dLC);
-    //if (RO <= 0.0 || RO >= R) RO = R - LT/3;    // inner radius of taper, in grid lengths
-    if (RO <= 0.0 || RO >= R) RO = R - LT;    // inner radius of taper, in grid lengths
+    ev_calc(&setup, &setup2);
+  }
 
-    if (istep == 0) {
-      // no previous coarse relaxation, so make initial wild guess at potential:
-      for (z=0; z<L; z++) {
-	a = BV * (float) (z) / (float) L;
-	for (r=0; r<R; r++) {
-	  v[0][z][r] =  a + (BV - a) * (float) (r) / (float) R;
-	}
-      }
-    }
-
-    /* boundary conditions and permittivity
-       boundary condition at Ge-vacuum interface:
-       epsilon0 * E_vac = espilon_Ge * E_Ge
-    */
-    for (z=0; z<L+1; z++) {
-      for (r=0; r<R+1; r++) {
-	eps[z][r] = eps_dz[z][r] = eps_dr[z][r] = 16;   // permittivity inside Ge
-	if (z < LO  && r < RO && r > RO-WO-1) eps[z][r] =  1;  // permittivity inside vacuum
-	if (r > 0) eps_dr[z][r-1] = (eps[z][r-1]+eps[z][r])/2.0f;
-	if (z > 0) eps_dz[z-1][r] = (eps[z-1][r]+eps[z][r])/2.0f;
-      }
-    }
-
-    for (z=0; z<L+1; z++) {
-      for (r=0; r<R+1; r++) {
-	vfraction[z][r] = 1.0;
-	if (z < LO && r < RO && r > RO-WO-1) {
-	  vfraction[z][r] = 0.0;  // no Ge inside the ditch
-	}
-	// boundary conditions
-	bulk[z][r] = 0;  // flag for normal bulk, no complications
-	// outside (HV) contact:
-	if (z >= L-LiT ||
-	    r >= R-LiT ||
-	    //r >= z/3 + R - LT/3 ||           // bottom taper
-	    r >= z + R-LiT - LT ||             // bottom taper  // FIXME: LiT at angle
-	    (z <= LiT && r >= RO) ||           // wrap-around
-            (L-z <= LH && r <= rrh[z]+LiT) ||  // hole
-            (L-z < OTL && r >= OT_R-LiT) ||    // outer taper  // FIXME: LiT at angle
-            (L-z < HTL && r <= IT_R+LiT) ||    // inner taper  // FIXME: LiT at angle
-            TBR_TEST || BBR_TEST) {            // top and bottom bulletization
-	  bulk[z][r] = -1;               // value of v[*][z][r] is fixed...
-	  v[0][z][r] = v[1][z][r] = BV;  // at the bias voltage
-	}
-	// inside (point) contact, with optional bulletization:
-	else if (z <= LC && r <= rrc[z]) {
-	  bulk[z][r] = -1;                // value of v[*][z][r] is fixed...
-	  v[0][z][r] = v[1][z][r] = 0;    // at zero volts
-	  /* radial edge of inside contact; if the PC radius is not in the middle
-	     of a pixel, we want to modify interpolation of V in surrounding pixels
-	  */
-	  if (r == rrc[z] && drrc[z] < -0.05) {
-	    bulk[z][r] = 1;  // flag for radial edge of PC
-	    frrc[z] = -1.0/drrc[z];  // interpolation weight for pixel at (r-1)
-	    // only part of the pixel has volume charge density, the rest is contact
-	    vfraction[z][r] *= -2.0*drrc[z];
-	  }
-	  /* z edge of inside contact; if the PC length is not in the middle
-	     of a pixel, we want to modify interpolation of V in surrounding pixels
-	  */
-	  if (z == LC && dLC < -0.05) {
-	    bulk[z][r] = 2;  // flag for z edge of PC
-	    fLC = -1.0/dLC;  // interpolation weight for pixel at (z-1)
-	    // only part of the pixel has volume charge density, the rest is contact
-	    vfraction[z][r] *= -2.0*dLC;
-	  }
-	}
-	/* edges of inside contact; if the PC radius and/or legth is not in the middle
-	   of a pixel, we want to modify interpolation of V in surrounding pixels...
-	   in this case, the radius/length > grid point, so it modifies the
-	   interpolation for the next point out
-	*/
-	// FIXME: Check for adjacent ditch
-	else if (z <= LC && r == rrc[z]+1 && drrc[z] > 0.05) {
-	  bulk[z][r] = 1;         // flag for radial edge of PC
-	  frrc[z] = 1.0/(1.0 - drrc[z]);  // interpolation weight for pixel at (r-1)
-	}
-	else if (z == LC+1 && r <= rrc[z] && dLC > 0.05) {
-	  bulk[z][r] = 2;         // flag for z edge of PC
-	  fLC = 1.0/(1.0 - dLC);  // interpolation weight for pixel at (z-1)
-	}
-      }
-    }
-
-    // now do the actual relaxation
-    //for (iter=0; iter<max_its/3; iter++) {
-    for (iter=0; iter<max_its; iter++) {
-      double OR_fact = OVER_RELAX_FACTOR;
-      if (iter < 2) OR_fact = 0.0;
-      else if (iter < 200) OR_fact *= 0.9;
-
-      if (old == 0) {
-	old = 1;
-	new = 0;
-      } else {
-	old = 0;
-	new = 1;
-      }
-      sum_dif = 0.0f;
-      max_dif = 0.0f;
-      bubble_volts = 0.0f;
-
-      for (z=0; z<L; z++) {
-	for (r=0; r<R; r++) {
-	  if (bulk[z][r] < 0) continue;      // outside or inside contact
-          save_dif = v[old][z][r] - v[new][z][r];  // step difference from previous iteration
-          // if (iter < 2) save_dif = 0; 
-
-	  if (bulk[z][r] == 0) {             // normal bulk, no complications
-	    v_sum = v[old][z+1][r]*eps_dz[z][r] + v[old][z][r+1]*eps_dr[z][r]*s1[r];
-	    eps_sum = eps_dz[z][r] + eps_dr[z][r]*s1[r];
-	    min = fminf(v[old][z+1][r], v[old][z][r+1]);
-	    if (z > 0) {
-	      v_sum += v[old][z-1][r]*eps_dz[z-1][r];
-	      eps_sum += eps_dz[z-1][r];
-	      min = fminf(min, v[old][z-1][r]);
-	    } else {
-	      v_sum += v[old][z+1][r]*eps_dz[z][r];  // reflection symm around z=0
-	      eps_sum += eps_dz[z][r];
-	    }
-	    if (r > 0) {
-	      v_sum += v[old][z][r-1]*eps_dr[z][r-1]*s2[r];
-	      eps_sum += eps_dr[z][r-1]*s2[r];
-	      min = fminf(min, v[old][z][r-1]);
-	    } else {
-	      v_sum += v[old][z][r+1]*eps_dr[z][r]*s1[r];  // reflection symm around r=0
-	      eps_sum += eps_dr[z][r]*s1[r];
-	    }
-
-	  } else if (bulk[z][r] == 1) {    // interpolated radial edge of point contact
-	    /* since the PC radius is not in the middle of a pixel,
-	       use a modified weight for the interpolation to (r-1)
-	     */
-	    v_sum = v[old][z+1][r]*eps_dz[z][r] + v[old][z][r+1]*eps_dr[z][r]*s1[r] +
-	            v[old][z][r-1]*eps_dr[z][r-1]*s2[r]*frrc[z];
-	    eps_sum = eps_dz[z][r] + eps_dr[z][r]*s1[r] + eps_dr[z][r-1]*s2[r]*frrc[z];
-	    min = fminf(v[old][z+1][r], v[old][z][r+1]);
-	    min = fminf(min, v[old][z][r-1]);
-	    if (z > 0) {
-	      v_sum += v[old][z-1][r]*eps_dz[z-1][r];
-	      eps_sum += eps_dz[z-1][r];
-	      min = fminf(min, v[old][z-1][r]);
-	    } else {
-	      v_sum += v[old][z+1][r]*eps_dz[z][r];  // reflection symm around z=0
-	      eps_sum += eps_dz[z][r];
-	    }
-	  } else if (bulk[z][r] == 2) {    // interpolated z edge of point contact
-	    /* since the PC length is not in the middle of a pixel,
-	       use a modified weight for the interpolation to (z-1)
-	     */
-	    v_sum = v[old][z+1][r]*eps_dz[z][r] + v[old][z][r+1]*eps_dr[z][r]*s1[r] +
-	            v[old][z-1][r]*eps_dz[z-1][r]*fLC;
-	    eps_sum = eps_dz[z][r] + eps_dr[z][r]*s1[r] + eps_dz[z-1][r]*fLC;
-	    min = fminf(v[old][z+1][r], v[old][z][r+1]);
-	    min = fminf(min, v[old][z-1][r]);
-	    if (r > 0) {
-	      v_sum += v[old][z][r-1]*eps_dr[z][r-1]*s2[r];
-	      eps_sum += eps_dr[z][r-1]*s2[r];
-	      min = fminf(min, v[old][z][r-1]);
-	    } else {
-	      v_sum += v[old][z][r+1]*eps_dr[z][r]*s1[r];  // reflection symm around r=0
-	      eps_sum += eps_dr[z][r]*s1[r];
-	    }
-	    // check for cases where the PC corner needs modification in both r and z
-	    if (z == LC && bulk[z-1][r] == 1) {
-	      v_sum += v[old][z][r-1]*eps_dr[z][r-1]*s2[r]*(frrc[z]-1.0);
-	      eps_sum += eps_dr[z][r-1]*s2[r]*(frrc[z]-1.0);
-	      min = fminf(min, v[old][z][r-1]);
-	    }
-
-	  } else {
-	    printf(" ERROR! bulk = %d undefined for (z,r) = (%d,%d)\n",
-		   bulk[z][r], z, r);
-	    return 1;
-	  }
-
-	  // calculate the interpolated mean potential and the effect of the space charge
-	  mean = v_sum / eps_sum;
-	  v[new][z][r] = mean + vfraction[z][r] * (imp_z[z]*imp_rm[r] + imp_ra[r]);
-	  if (r == 0)  // special case where volume of voxel is 1/6 of area, not 1/4
-	    v[new][z][r] = mean + (vfraction[z][r] * (imp_z[z]*imp_rm[r] + imp_ra[r])) / 1.5;
-	  if ((z == 0 && r > RC && r < RO-WO) ||        // passivated surface at z = 0
-              (z < LO && (r == RO || r == RO-WO-1)) ||  // passivated surface on sides of ditch
-              (z == LO && r <= RO && r >= RO-WO-1))     // passivated surface at top of ditch
-	    v[new][z][r] += vfraction[z][r] * S;
-	  // check to see if the pixel is undepleted
-	  if (vfraction[z][r] > 0.45) undepleted[r][z] = '.';
-	  if (v[new][z][r] <= 0.0f) {
-	    v[new][z][r] = 0.0f;
-	    if (vfraction[z][r] > 0.45) undepleted[r][z] = '*';
-	  } else if (v[new][z][r] < min) {
-	    if (bubble_volts == 0.0f) bubble_volts = min + 0.1f;
-	    v[new][z][r] = bubble_volts;
-	    if (vfraction[z][r] > 0.45) undepleted[r][z] = '*';
-	  }
-	  // calculate difference from last iteration, for convergence check
-	  dif = v[old][z][r] - v[new][z][r];
-          v[new][z][r] += OR_fact*save_dif; // do over-relaxation
-
-	  if (dif < 0.0f) dif = -dif;
-	  sum_dif += dif;
-	  if (max_dif < dif) max_dif = dif;
-	}
-      }
-      // report results for some iterations
-      if (iter < 10 || (iter < 600 && iter%100 == 0) || iter%1000 == 0)
-	printf("%5d %d %d %.10f %.10f\n", iter, old, new, max_dif, sum_dif/(float) (L*R));
-      if (max_dif < 0.000000001) break;
-    }
-
-    printf("\n>> %d %.16f\n\n", iter, sum_dif);
-
-    fully_depleted = 1;
-    for (r=0; r<R+1; r++) {
-      for (z=0; z<L+1; z++) {
-	if (undepleted[r][z] == '*') {
-	  fully_depleted = 0;
-	  if (v[new][z][r] > 0.001) undepleted[r][z] = 'B';  // identifies pinch-off
-	}
-      }
-    }
-    if (fully_depleted) {
-      printf("Detector is fully depleted.\n");
+  /* -------------- calculate weighting potential */
+  if (setup.write_WP) {
+    setup1.write_WP = 0; // no need to save intermediate calculations
+    setup2.write_WP = 0;
+    if (setup.xtal_grid > 0.4) {
+      wp_calc(&setup2, NULL);
     } else {
-      printf("Detector is not fully depleted.\n");
-      if (bubble_volts > 0.0f) printf("Pinch-off bubble at %.0f V potential\n", bubble_volts);
+      wp_calc(&setup1, NULL);
+      wp_calc(&setup2, &setup1);
     }
-    if (setup.verbosity >= CHATTY) {
-      t1 = time(NULL);
-      printf("\n ^^^^^^^^^^^^^ %d (%d) s elapsed ^^^^^^^^^^^^^^\n",
-	     (int) (t1 - t0), (int) (t1 - t2));
-      t2 = t1;
-    }
-
-    if (istep == 0) {
-      // can reduce # of iterations after first go-around
-      max_its /= MAX_ITS_FACTOR;
-      // report V and E along the axes r=0 and z=0
-      if (setup.verbosity >= NORMAL) {
-	printf("  z(mm)(r=0)      V   E(V/cm) |  r(mm)(z=0)      V   E(V/cm)\n");
-	a = b = v[new][0][0];
-	for (z=0; z<L+1; z++) {
-	  printf("%10.1f %8.1f %8.1f  |",
-		 ((float) z)*grid, v[new][z][0], (v[new][z][0] - a)/(0.1*grid));
-	  a = v[new][z][0];
-	  if (z > R) {
-	    printf("\n");
-	  } else {
-	    r = z;
-	    printf("%10.1f %8.1f %8.1f\n",
-		   ((float) r)*grid, v[new][0][r], (v[new][0][r] - b)/(0.1*grid));
-	    b = v[new][0][r];
-	  }
-	}
-      }
-      // write a little file that shows any undepleted voxels in the crystal
-      file = fopen("undepleted.txt", "w");
-      for (r=R; r>=0; r--) {
-	undepleted[r][L] = '\0';
-	fprintf(file, "%s\n", undepleted[r]);
-      }
-      fclose(file);
-    }
+    wp_calc(&setup, &setup2);
   }
 
-  if (WV) {
-    if (setup.impurity_z0 > 0) {
-      // swap voltages back to negative for n-type material
-      for (r=0; r<R+1; r++) {
-	for (z=0; z<L+1; z++) {
-	  v[new][z][r] = -v[new][z][r];
-	}
-      }
-    }
-    // write potential and field to output file
-    if (!(file = fopen(setup.field_name, "w"))) {
-      printf("ERROR: Cannot open file %s for electric field...\n", setup.field_name);
-      return 1;
-    } else {
-      printf("Writing electric field data to file %s\n", setup.field_name);
-    }
-    /* copy configuration parameters to output file */
-    report_config(file, config_file_name);
-    fprintf(file, "#\n# HV bias in fieldgen: %.1f V\n", BV);
-    if (fully_depleted) {
-      fprintf(file, "# Detector is fully depleted.\n");
-    } else {
-      fprintf(file, "# Detector is not fully depleted.\n");
-      if (bubble_volts > 0.0f) fprintf(file, "# Pinch-off bubble at %.0f V potential\n", bubble_volts);
-    }
-    fprintf(file, "#\n## r (mm), z (mm), V (V),  E (V/cm), E_r (V/cm), E_z (V/cm)\n");
-
-    Emin = 9999.9;
-    rmin = zmin = 99.9;
-    int RS = 0;
-    if (WV > 1) RS = -R;
-    for (int rr=RS; rr<R+1; rr++) {
-      r = rr;
-      if (rr < 0) r= -rr;
-      for (z=0; z<L+1; z++) {
-	// calc E in r-direction
-	if (r==0) {
-	  // E_r = (v[new][z][r] - v[new][z][r+1])/(0.1*grid);
-	  E_r = 0;
-	} else if (r==R) {
-	  E_r = (v[new][z][r-1] - v[new][z][r])/(0.1*grid);
-	} else {
-	  E_r = (v[new][z][r-1] - v[new][z][r+1])/(0.2*grid);
-	}
-	// calc E in z-direction
-	if (z==0) {
-	  E_z = (v[new][z][r] - v[new][z+1][r])/(0.1*grid);
-	} else if (z==L) {
-	  E_z = (v[new][z-1][r] - v[new][z][r])/(0.1*grid);
-	} else {
-	  E_z = (v[new][z-1][r] - v[new][z+1][r])/(0.2*grid);
-	}
-        E = sqrt(E_r*E_r + E_z*E_z);
-        if (E > 0.1 && E < Emin &&
-            (R-LT-r)*grid > 5.0 &&               // more than 5 mm from outer radius
-            (L-z)*grid > 5.0 && z*grid > 5.0 &&  // more than 5 mm from top & bottom
-            (z > LC + 2 || r > RC + 2) &&        // outside point contact
-            (L-z > LH  || (r - rrh[z])*grid > 5) &&     // outside inner hole radius
-            (L-z > OTL || (OT_R - r)*grid > 5) &&       // inside outer taper radius
-            (L-z > HTL || (r - IT_R)*grid > 5)) {       // outside inner taper radius
-          Emin = E;
-          rmin = r*grid;
-          zmin = z*grid;
-        }
-            
-	fprintf(file, "%7.2f %7.2f %7.1f %7.1f %7.1f %7.1f\n",
-		((float) rr)*grid,  ((float) z)*grid, v[new][z][r], E, E_r, E_z);
-      }
-      fprintf(file, "\n");
-    }
-    fclose(file);
-    printf("\n Minimum bulk field = %.1f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
-           Emin, rmin, zmin);
-  }
-
-  if (WD) {
-    // write depletion surface to output file
-    sprintf(fname, "depl_%4.4dV.dat", (int) BV);
-    if (!(file = fopen(fname, "w"))) {
-      printf("ERROR: Cannot open file %s for depletion...\n", fname);
-      return 1;
-    } else {
-      printf("Writing depletion surface data to file %s\n", fname);
-    }
-    fprintf(file, "#\n## r (mm), z (mm), \n");
-    rmin = zmin = 99.9;
-    int RS = -R;
-    for (int rr=RS; rr<R+1; rr++) {
-      r = rr;
-      if (rr < 0) r= -rr;
-      for (z=0; z<L+1; z++) {
-        j = 0;
-        if (undepleted[r][z] == '.') j = 1;
-        if (undepleted[r][z] == '*') j = 2;
-        if (undepleted[r][z] == 'B') j = 2;
-	fprintf(file, "%7.2f %7.2f %d\n",
-		((float) rr)*grid,  ((float) z)*grid, j);
-      }
-      fprintf(file, "\n");
-    }
-    fclose(file);
-  }
-
-  if (WP == 0) return 0;
-  if (fully_depleted) {
-    /* save potential close to point contact,
-       to use later when calculating depletion voltage */
-    //for (z=0; z<LC+2; z++) {
-    //  for (r=0; r<RC+2; r++) {
-    for (z=0; z<L; z++) {
-      for (r=0; r<R; r++) {
-        vsave[z][r] = fabs(v[new][z][r]);
-      }
-    }
-  }
-
-  /*
-    -------------------------------------------------------------------------
-    now calculate the weighting potential for the central contact
-    the WP is also needed for calculating the capacitance
-    -------------------------------------------------------------------------
-  */
-
-  printf("\nCalculating weighting potential...\n\n");
-  if (setup.verbosity >= CHATTY) t0 = t2 = time(NULL);
-  max_its = MAX_ITS;
-  if (setup.max_iterations > 0) max_its = setup.max_iterations;
-  // max_its = 2*MAX_ITS;  // use twice as many iterations for WP; accuracy is more important?
-  // if (setup.max_iterations > 0) max_its = 2*setup.max_iterations;
-
-  /* to be safe, initialize overall potential to 0 */
-  for (z=0; z<LL+1; z++) {
-    for (r=0; r<RR+1; r++) {
-      v[0][z][r] = v[1][z][r] = 0;
-    }
-  }
-  for (istep=0; istep<3 && gridstep[istep]>0; istep++) {
-    grid = gridstep[istep];
-    old = 1;
-    new = 0;
-    // gridfact = integer ratio of current grid step size to final grid step size
-    gridfact = lrintf(grid / setup.xtal_grid);
-
-    if (istep > 0) {
-      /* the previous calculation was on a coarser grid...
-	 now copy/expand the potential to the new finer grid
-      */
-      i = (int) (gridstep[istep-1] / gridstep[istep] + 0.5);
-      f = 1.0 / (float) i;
-      printf("\ngrid %.4f -> %.4f; ratio = %d %.3f\n\n",
-	     gridstep[istep-1], gridstep[istep], i, f);
-      for (z=0; z<L+1; z++) {
-	for (r=0; r<R+1; r++) {
-	  f1z = 0.0;
-	  zmax = i*z+i;
-	  if (zmax > LL+1) zmax = LL+1;
-	  for (zz=i*z; zz<zmax; zz++) {
-	    f2z = 1.0 - f1z;
-	    f1r = 0.0;
-	    rmax = i*r+i;
-	    if (rmax > RR+1) rmax = RR+1;
-	    for (rr=i*r; rr<rmax; rr++) {
-	      f2r = 1.0 - f1r;
-	      v[0][zz][rr] =      // linear interpolation
-		f2z*f2r*v[1][z][r  ] + f1z*f2r*v[1][z+1][r  ] +
-		f2z*f1r*v[1][z][r+1] + f1z*f1r*v[1][z+1][r+1];
-	      f1r += f;
-	    }
-	    f1z += f;
-	  }
-	}
-      }
-    }
-
-    L  = lrint(setup.xtal_length/grid);
-    R  = lrint(setup.xtal_radius/grid);
-    LiT = lrint(setup.Li_thickness/grid);
-    TBR = lrint(setup.top_bullet_radius/grid);
-    BBR = lrint(setup.bottom_bullet_radius/grid);
-    LC = lrint(setup.pc_length/grid);
-    dLC = setup.pc_length/grid - (float) LC;
-    if (dLC < 0.05 && dLC > -0.05) dLC = 0;
-    RC = lrint(setup.pc_radius/grid);
-    dRC = setup.pc_radius/grid - (float) RC;
-    if (dRC < 0.05 && dRC > -0.05) dRC = 0;
-    printf("grid = %f  RC = %d  dRC = %f  LC = %d  dLC = %f\n\n",
-	   grid, RC, dRC, LC, dLC);
-    /* set up bulletization inside point contact */
-    if (setup.bulletize_PC) {
-      for (z=0; z<=LC; z++) {
-        if (setup.pc_length <= setup.pc_radius) {  // LC <= RC; use LC as bulletization radius
-          a = setup.pc_radius - setup.pc_length;
-          b = z * grid;
-          c = setup.pc_length*setup.pc_length - b*b;
-          if (c < 0.0) c = 0;
-          c = a + sqrt(c);
-        } else {  // LC > RC; use RC as bulletization radius
-          if (z > LC-RC) {
-            a = setup.pc_length - setup.pc_radius;
-            b = z * grid - a;
-            c = setup.pc_radius*setup.pc_radius - b*b;
-            if (c < 0.0) c = 0;
-            c = sqrt(c);
-          } else {
-            c = setup.pc_radius;
-          }
-        }
-        rrc[z] = lrint(c/grid);
-        drrc[z] = c/grid - (float) rrc[z];
-        if (drrc[z] < 0.05 && drrc[z] > -0.05) drrc[z] = 0;
-        frrc[z] = 0;
-      }
-      drrc[LC+1] = drrc[LC];
-    } else {  // no bulletization
-      for (z=0; z<=LC+1; z++) {
-        rrc[z] = RC;
-        drrc[z] = dRC;
-        frrc[z] = 0;
-      }
-    }
-    
-    LT = lrint(setup.bottom_taper_length/grid);
-    RO = lrint(setup.wrap_around_radius/grid);
-    LO = lrint(setup.ditch_depth/grid);
-    WO = lrint(setup.ditch_thickness/grid);
-    LH = lrint(setup.hole_length/grid);
-    RH = lrint(setup.hole_radius/grid);
-    HBR = lrint(setup.hole_bullet_radius/grid);
-    OTL = lrint(setup.outer_taper_length/grid);
-    OTW = lrint(setup.outer_taper_width/grid);
-    HTL = lrint(setup.inner_taper_length/grid);
-    HTW = lrint(setup.inner_taper_width/grid);
-    /* set up bulletization inside hole */
-    for (z=L-LH; z<=L; z++) rrh[z] = RH;
-    if (LH > 0 && RH > 0 && HBR > 0) {
-      for (z=L-LH; z<L-LH+HBR+2; z++) {
-        a = setup.hole_radius - setup.hole_bullet_radius;
-        b = setup.xtal_length - setup.hole_length + setup.hole_bullet_radius - z*grid;
-        c = setup.hole_bullet_radius*setup.hole_bullet_radius - b*b;
-        if (c < 0.0) c = 0;
-        c = a + sqrt(c);
-        rrh[z] = lrint(c/grid);
-      }
-    }
-    //if (RO <= 0.0 || RO >= R) RO = R - LT/3;    // inner radius of taper, in grid lengths
-    if (RO <= 0.0 || RO >= R) RO = R - LT;    // inner radius of taper, in grid lengths
-
-    if (istep == 0) {
-      // no previous coarse relaxation, so set initial potential:
-      for (z=0; z<L+1; z++) {
-	for (r=0; r<R+1; r++) {
-	  v[0][z][r] = v[1][z][r] = 0.0;
-	}
-      }
-      /*  ----- can comment out this next section to test convergence of WP ----- */
-      // perhaps this is a better initial guess than just zero everywhere
-      a = LC + RC / 2;
-      b = 2.0f*a / (float) (L + R);
-      for (z=1; z<L; z++) {
-	for (r=1; r<R; r++) {
-	  c = a / sqrt(z*z + r*r) - b;
-	  if (c < 0) c = 0;
-	  if (c > 1) c = 1;
-	  v[0][z][r] = v[1][z][r] = c;
-	}
-      }
-      /* ----- ----- */
-      // inside contact:
-      for (z=0; z<LC+1; z++) {
-	for (r=0; r<rrc[z]+1; r++) {
-	  v[0][z][r] = v[1][z][r] = 1.0;
-	}
-      }
-    }
-
-    /* boundary conditions and permittivity
-       boundary condition at Ge-vacuum interface:
-       epsilon0 * E_vac = espilon_Ge * E_Ge
-    */
-    for (z=0; z<L+1; z++) {
-      for (r=0; r<R+1; r++) {
-	eps[z][r] = eps_dz[z][r] = eps_dr[z][r] = 16;   // permittivity inside Ge
-	if (z < LO  && r < RO && r > RO-WO-1) eps[z][r] =  1;  // permittivity inside vacuum
-	if (r > 0) eps_dr[z][r-1] = (eps[z][r-1]+eps[z][r])/2.0f;
-	if (z > 0) eps_dz[z-1][r] = (eps[z-1][r]+eps[z][r])/2.0f;
-      }
-    }
-
-    for (z=0; z<L+1; z++) {
-      for (r=0; r<R+1; r++) {
-	// boundary conditions
-	bulk[z][r] = 0;  // normal bulk, no complications
-	// outside (HV) contact:
-	if (z >= L-LiT ||
-	    r >= R-LiT ||
-	    //r >= z/3 + R - LT/3 ||           // bottom taper
-	    r >= z + R-LiT - LT ||             // bottom taper  // FIXME: LiT at angle
-	    (z <= LiT && r >= RO) ||           // wrap-around
-            (L-z <= LH && r <= rrh[z]+LiT) ||  // hole
-            (L-z < OTL && r >= OT_R-LiT) ||    // outer taper  // FIXME: LiT at angle
-            (L-z < HTL && r <= IT_R+LiT) ||    // inner taper  // FIXME: LiT at angle
-            TBR_TEST || BBR_TEST) {            // top and bottom bulletization
-	  bulk[z][r] = -1;                 // value of v[*][z][r] is fixed...
-	  v[0][z][r] = v[1][z][r] = 0.0;   // to zero
-	}
-	// inside (point) contact:
-	else if (z <= LC && r <= rrc[z]) {
-	  bulk[z][r] = -1;                 // value of v[*][z][r] is fixed...
-	  v[0][z][r] = v[1][z][r] = 1.0;   // to 1.0
-	  // radial edge of inside contact:
-	  if (r == rrc[z] && drrc[z] < -0.05) {
-	    bulk[z][r] = 1;
-	    frrc[z] = -1.0/drrc[z];
-	  }
-	  // z edge of inside contact:
-	  if (z == LC && dLC < -0.05) {
-	    bulk[z][r] = 2;
-	    fLC = -1.0/dLC;
-	  }
-	}
-	// edge of inside contact:
-	// FIXME: Check for adjacent ditch
-	else if (z <= LC && r == rrc[z]+1 && drrc[z] > 0.05) {
-	  bulk[z][r] = 1;
-	  frrc[z] = 1.0/(1.0 - drrc[z]);
-	}
-	else if (z == LC+1 && r <= rrc[z] && dLC > 0.05) {
-	  bulk[z][r] = 2;
-	  fLC = 1.0/(1.0 - dLC);
-	}
-
-	/* determine bulk regions where the detector is undepleted */
-	if (!fully_depleted) {
-	  if (undepleted[r*gridfact][z*gridfact] == '*') {
-	    bulk[z][r] = -1;	            // treat like part of point contact
-	    v[0][z][r] = v[1][z][r] = 1.0;  // set WP to one
-	  } else if (undepleted[r*gridfact][z*gridfact] == 'B') { // pinch-off
-	    bulk[z][r] = 3;
-	  }
-	}
-      }
-    }
-
-    // now do the actual relaxation
-    for (iter=0; iter<max_its; iter++) {
-      double OR_fact = OVER_RELAX_FACTOR;
-      if (iter < 2) OR_fact = 0.0;
-      else if (iter < 200) OR_fact *= 0.9;
-
-      if (old == 0) {
-	old = 1;
-	new = 0;
-      } else {
-	old = 0;
-	new = 1;
-      }
-      sum_dif = 0.0f;
-      max_dif = 0.0f;
-      pinched_sum1 = pinched_sum2 = 0.0;
-
-      for (z=0; z<L; z++) {
-	for (r=0; r<R; r++) {
-	  if (bulk[z][r] < 0) continue;      // outside or inside contact
-          save_dif = v[old][z][r] - v[new][z][r];  // step difference from previous iteration
-          // if (iter < 2) save_dif = 0; 
-
-	  if (bulk[z][r] == 0) {            // normal bulk, no complications
-	    v_sum = v[old][z+1][r]*eps_dz[z][r] + v[old][z][r+1]*eps_dr[z][r]*s1[r];
-	    eps_sum = eps_dz[z][r] + eps_dr[z][r]*s1[r];
-	    if (z > 0) {
-	      v_sum += v[old][z-1][r]*eps_dz[z-1][r];
-	      eps_sum += eps_dz[z-1][r];
-	    } else {
-	      v_sum += v[old][z+1][r]*eps_dz[z][r];  // reflection symm around z=0
-	      eps_sum += eps_dz[z][r];
-	    }
-	    if (r > 0) {
-	      v_sum += v[old][z][r-1]*eps_dr[z][r-1]*s2[r];
-	      eps_sum += eps_dr[z][r-1]*s2[r];
-	    } else {
-	      v_sum += v[old][z][r+1]*eps_dr[z][r]*s1[r];  // reflection symm around r=0
-	      eps_sum += eps_dr[z][r]*s1[r];
-	    }
-
-	  } else if (bulk[z][r] == 1) {    // interpolated radial edge of point contact
-	    v_sum = v[old][z+1][r]*eps_dz[z][r] + v[old][z][r+1]*eps_dr[z][r]*s1[r] +
-	      v[old][z][r-1]*eps_dr[z][r-1]*s2[r]*frrc[z];
-	    eps_sum = eps_dz[z][r] + eps_dr[z][r]*s1[r] + eps_dr[z][r-1]*s2[r]*frrc[z];
-	    if (z > 0) {
-	      v_sum += v[old][z-1][r]*eps_dz[z-1][r];
-	      eps_sum += eps_dz[z-1][r];
-	    } else {
-	      v_sum += v[old][z+1][r]*eps_dz[z][r];  // reflection symm around z=0
-	      eps_sum += eps_dz[z][r];
-	    }
-	  } else if (bulk[z][r] == 2) {    // interpolated z edge of point contact
-	    v_sum = v[old][z+1][r]*eps_dz[z][r] + v[old][z][r+1]*eps_dr[z][r]*s1[r] +
-	      v[old][z-1][r]*eps_dz[z-1][r]*fLC;
-	    eps_sum = eps_dz[z][r] + eps_dr[z][r]*s1[r] + eps_dz[z-1][r]*fLC;
-	    if (r > 0) {
-	      v_sum += v[old][z][r-1]*eps_dr[z][r-1]*s2[r];
-	      eps_sum += eps_dr[z][r-1]*s2[r];
-	    } else {
-	      v_sum += v[old][z][r+1]*eps_dr[z][r]*s1[r];  // reflection symm around r=0
-	      eps_sum += eps_dr[z][r]*s1[r];
-	    }
-	    if (z == LC && bulk[z-1][r] == 1) {
-	      v_sum += v[old][z][r-1]*eps_dr[z][r-1]*s2[r]*(frrc[z]-1.0);
-	      eps_sum += eps_dr[z][r-1]*s2[r]*(frrc[z]-1.0);
-	    }
-
-	  } else if (bulk[z][r] == 3) {   // pinched-off
-	    if (bulk[z+1][r] == 0) {
-	      pinched_sum1 += v[old][z+1][r]*eps_dz[z][r];
-	      pinched_sum2 += eps_dz[z][r];
-	    }
-	    if (bulk[z][r+1] == 0) {
-	      pinched_sum1 += v[old][z][r+1]*eps_dr[z][r]*s1[r];
-	      pinched_sum2 += eps_dr[z][r]*s1[r];
-	    }
-	    if (z > 0 && bulk[z-1][r] == 0) {
-	      pinched_sum1 += v[old][z-1][r]*eps_dz[z-1][r];
-	      pinched_sum2 += eps_dz[z-1][r];
-	    }
-	    if (r > 0 && bulk[z][r-1] == 0) {
-	      pinched_sum1 += v[old][z][r-1]*eps_dr[z][r-1]*s2[r];
-	      pinched_sum2 += eps_dr[z][r-1]*s2[r];
-	    }
-	    v_sum = pinched_sum1;
-	    eps_sum = pinched_sum2;
-
-	  } else {
-	    printf(" ERROR! bulk = %d undefined for (z,r) = (%d,%d)\n",
-		   bulk[z][r], z, r);
-	    return 1;
-	  }
-	  if (bulk[z][r] != 3) {
-	    mean = v_sum / eps_sum;
-	    v[new][z][r] = mean;
-	    dif = v[old][z][r] - v[new][z][r];
-            v[new][z][r] += OR_fact*save_dif; // do over-relaxation
-	    if (dif < 0.0f) dif = -dif;
-	    sum_dif += dif;
-	    if (max_dif < dif) max_dif = dif;
-	  }
-	}
-      }
-
-      if (pinched_sum2 > 0.1) {
-	mean = pinched_sum1 / pinched_sum2;
-	for (z=0; z<L; z++) {
-	  for (r=0; r<R; r++) {
-	    if (bulk[z][r] == 3) {
-	      v[new][z][r] = mean;
-	      dif = v[old][z][r] - v[new][z][r];
-	      if (dif < 0.0f) dif = -dif;
-	      sum_dif += dif;
-	      if (max_dif < dif) max_dif = dif;
-	    }
-	  }
-	}
-      }
-
-      // report results for some iterations
-      if (iter < 10 || (iter < 600 && iter%100 == 0) || iter%1000 == 0)
-	printf("%5d %d %d %.10f %.10f ; %.10f %.10f\n",
-	       iter, old, new, max_dif, sum_dif/(float) (L*R),
-	       v[new][L/2][R/2], v[new][L-5][R-5]);
-      if (max_dif < 0.0000000001) break;
-    }
-    printf(">> %d %.16f\n\n", iter, sum_dif);
-    if (setup.verbosity >= CHATTY) {
-      t1 = time(NULL);
-      printf(" ^^^^^^^^^^^^^ %d (%d) s elapsed ^^^^^^^^^^^^^^\n",
-	     (int) (t1 - t0), (int) (t1 - t2));
-      t2 = t1;
-    }
-    if (istep == 0) max_its /= MAX_ITS_FACTOR;
-  }
-
-  /* --------------------- calculate capacitance ---------------------
+  /* -------------- calculate capacitance
      1/2 * epsilon * integral(E^2) = 1/2 * C * V^2
-     so    C = epsilon * integral(E^2) / V^2
-     V = 1 volt
+     so    C = epsilon * integral(E^2) / V^2    V = 1 volt
   */
-  printf("Calculating integrals of weighting field\n");
-  esum = esum2 = j = 0;
-  for (z=0; z<L; z++) {
-    for (r=1; r<R; r++) {
-      E_r = eps_dr[z][r]/16.0 * (v[new][z][r] - v[new][z][r+1])/(0.1*grid);
-      E_z = eps_dz[z][r]/16.0 * (v[new][z][r] - v[new][z+1][r])/(0.1*grid);
-      esum += (E_r*E_r + E_z*E_z) * (double) r;
-      if ((r == RC && z <= LC) ||
-	  (r <= RC && z == LC) ||
-	  (r == RC+1 && z <= LC+1) || // average over two different surfaces
-	  (r <= RC+1 && z == LC+1)) {
-	if (bulk[z+1][r+1] < 0) j = 1;
-	esum2 += 0.5 * sqrt(E_r*E_r + E_z*E_z) * (double) r;  // 0.5 since averaging over 2 surfaces
+  double esum, esum2, pi=3.14159, Epsilon=(8.85*16.0/1000.0);  // permittivity of Ge in pF/mm
+  float  E_r, E_z;
+  float  grid = setup.xtal_grid;
+  int    r, z, test;
+  int    L  = lrint(setup.xtal_length/grid)+1;
+  int    R  = lrint(setup.xtal_radius/grid)+1;
+  int    LC = lrint(setup.pc_length/grid)+1;
+  int    RC = lrint(setup.pc_radius/grid)+1;
+
+  esum = esum2 = test = 0;
+  for (z=1; z<L; z++) {
+    for (r=2; r<R; r++) {
+      E_r = setup.eps_dr[z][r]/16.0 * (setup.v[1][z][r] - setup.v[1][z][r+1])/(0.1*grid);
+      E_z = setup.eps_dz[z][r]/16.0 * (setup.v[1][z][r] - setup.v[1][z+1][r])/(0.1*grid);
+      esum += (E_r*E_r + E_z*E_z) * (double) (r-1);
+      if ((r == RC   && z <= LC)   || (r <= RC   && z == LC)   ||
+	  (r == RC+1 && z <= LC+1) || (r <= RC+1 && z == LC+1)) { // average over two different surfaces
+	if (setup.point_type[z+1][r+1] == PC) test = 1;
+	esum2 += 0.5 * sqrt(E_r*E_r + E_z*E_z) * (double) (r-1);  // 0.5 since averaging over 2 surfaces
       }
     }
   }
@@ -1288,138 +233,162 @@ int main(int argc, char **argv)
   // 0.01 converts (V/cm)^2 to (V/mm)^2, pow() converts to grid^3 to mm3
   esum2 *= 2.0 * pi * 0.1 * Epsilon * pow(grid, 2.0);
   // 0.1 converts (V/cm) to (V/mm),  grid^2 to  mm2
-  printf("\n  >>  Calculated capacitance at %.0f V: %.3lf pF\n", BV, esum);
-  if (j==0) {
-    printf("  >>  Alternative calculation of capacitance: %.3lf pF\n\n", esum2);
-  } else {
-    printf("\n");
-  }
+  printf("  >>  Calculated capacitance at %.0f V: %.3lf pF\n", BV, esum);
+  if (!test)
+    printf("  >>  Alternative calculation of capacitance: %.3lf pF\n", esum2);
 
-  if (WP) {
-    // write WP values to output file
-    if (!(file = fopen(setup.wp_name, "w"))) {
-      printf("ERROR: Cannot open file %s for weighting potential...\n", setup.wp_name);
-      return 1;
-    } else {
-      printf("Writing weighting potential to file %s\n\n", setup.wp_name);
-    }
-    /* copy configuration parameters to output file */
-    report_config(file, config_file_name);
-    fprintf(file, "#\n# HV bias in fieldgen: %.1f V\n", BV);
-    if (fully_depleted) {
-      fprintf(file, "# Detector is fully depleted.\n");
-    } else {
-      fprintf(file, "# Detector is not fully depleted.\n");
-      if (bubble_volts > 0.0f) fprintf(file, "# Pinch-off bubble at %.0f V potential\n", bubble_volts);
-    }
-    fprintf(file, "#\n## r (mm), z (mm), WP\n");
-    if (WP > 1) {
-      for (r=-R; r<R+1; r++) {
-        if ((i=r) < 0) i = -r;
-        for (z=0; z<L+1; z++) {
-          fprintf(file, "%7.2f %7.2f %12.6e\n",
-                  ((float) r)*grid,  ((float) z)*grid, v[new][z][i]);
-        }
-        fprintf(file, "\n");
-      }
-    } else {
-      for (r=0; r<R+1; r++) {
-        for (z=0; z<L+1; z++) {
-          fprintf(file, "%7.2f %7.2f %12.6e\n",
-                  ((float) r)*grid,  ((float) z)*grid, v[new][z][r]);
-        }
-        fprintf(file, "\n");
-      }
-    }
-    fclose(file);
-  }
-
-  if (fully_depleted) {
-    /* estimate depletion voltage */
-    min = BV;
-    for (z=0; z<LC+2; z++) {
-      for (r=0; r<RC+2; r++) {
-        if (vsave[z][r] > 0 &&
-            min > vsave[z][r] / (1.0 - v[new][z][r])) {
-          min = vsave[z][r] / (1.0 - v[new][z][r]);
-          vminr = r;
-          vminz = z;
+  /* -------------- estimate depletion voltage */
+  double min = BV, min2 = BV, dV, dW, testv;
+  int    vminr=0, vminz=0;
+  int    dz[4] = {1, -1, 0, 0}, dr[4] = {0, 0, 1, -1};
+  if (setup.fully_depleted) {
+    // find minimum potential
+    for (z=1; z<LC+2; z++) {
+      for (r=1; r<RC+2; r++) {
+        if (setup.vsave[z][r] > 0 &&
+            min > setup.vsave[z][r] / (1.0 - setup.v[1][z][r])) {
+          min = setup.vsave[z][r] / (1.0 - setup.v[1][z][r]);
         }
       }
     }
-    // printf("Min V, WP = %.4f, %.4f at (r,z) = (%d,%d)\n",
-    //        vsave[vminz][vminr], v[new][vminz][vminr], vminr, vminz);
 
-    /* also try to check for bubble depletion / pinch-off
-       by seeing how much the bias must be reduced for any pixel to be in a local potential minimum */
-    min2 = BV;
-    vminr2 = vminz2 = 0;
-    /* first check along r=0 (z-axiz) */
-    for (z=LC+2; z<L-LH-2; z++) {
-      dVn[0] = vsave[z+1][0]  - vsave[z][0] ;
-      dWn[0] = v[new][z+1][0] - v[new][z][0];
-      dVn[1] = vsave[z-1][0]  - vsave[z][0] ;
-      dWn[1] = v[new][z-1][0] - v[new][z][0];
-      test = -1;
-      for (i=0; i<2; i++) {
-        if (dWn[i]*grid > 0.00001 && dVn[i] < 0 && test < -dVn[i]/dWn[i]) test = -dVn[i]/dWn[i];
-      }
-      if (test >= 0 && min2 > test) {
-        min2 = test;
-        vminr2 = 0;
-        vminz2 = z;
-        /* printf("   min %f   at (r,z) = (0, %.1f);  vsave= %f  vnew = %f\n",
-           min2, z*grid, vsave[z][0], v[new][z][0]); */
-      }
-    }
-    /* then check pinch-off for r > 0 */
+    /* check for bubble depletion / pinch-off by seeing how much the bias
+       must be reduced for any pixel to be in a local potential minimum  */
     for (z=LC+2; z<L-2; z++) {
       for (r=1; r<R-2; r++) {
-        if (vsave[z][r] > 0 && v[new][z][r] > 0.0001) {
-          dVn[0] = vsave[z+1][r]  - vsave[z][r] ;
-          dWn[0] = v[new][z+1][r] - v[new][z][r];
-          dVn[1] = vsave[z-1][r]  - vsave[z][r] ;
-          dWn[1] = v[new][z-1][r] - v[new][z][r];
-          dVn[2] = vsave[z][r+1]  - vsave[z][r] ;
-          dWn[2] = v[new][z][r+1] - v[new][z][r];
-          dVn[3] = vsave[z][r-1]  - vsave[z][r] ;
-          dWn[3] = v[new][z][r-1] - v[new][z][r];
-          test = -1;
+        if (setup.point_type[z][r] == INSIDE && setup.v[1][z][r] > 0.0001) {
+          testv = -1;
           for (i=0; i<4; i++) {
-            if (dWn[i]*grid > 0.00001 && dVn[i] < 0 && test < -dVn[i]/dWn[i])
-              test = -dVn[i]/dWn[i];
+            if (r==1 && i==2) break;  // do not check dr for r=1 (=0.0)
+            dV = setup.vsave[z+dz[i]][r+dr[i]]  - setup.vsave[z][r];  // potential
+            dW = setup.v[1][z+dz[i]][r+dr[i]]   - setup.v[1][z][r];   // WP
+            if (dW*grid > 0.00001 && dV < 0 && testv < -dV/dW) testv = -dV/dW;
           }
-          if (test >= 0 && min2 > test) {
-            min2 = test;
-            vminr2 = r;
-            vminz2 = z;
-            if (0) {
-              printf("   min %.1f   at (r,z) = (%.1f, %.1f);  vsave= %.1f  vnew = %f\n",
-                     min2, r*grid, z*grid, vsave[z][r], v[new][z][r]);
-              printf("     ratios %9.1f %9.1f %9.1f %9.1f\n", -dVn[0]/dWn[0], -dVn[1]/dWn[1], -dVn[2]/dWn[2], -dVn[3]/dWn[3]);
-              printf("          E %9.6f %9.6f %9.6f %9.6f\n", dVn[0], dVn[1], dVn[2], dVn[3]);
-              printf("         dW %9.6f %9.6f %9.6f %9.6f\n", dWn[0], dWn[1], dWn[2], dWn[3]);
-            }
+          if (testv >= 0 && min2 > testv) {
+            min2 = testv;
+            vminr = r; vminz = z;
           }
         }
       }
     }
     if (min2 < min) {
-      printf("\nEstimated pinch-off voltage = %.0f V\n", BV - min);
-      printf(" min2 = %.1f at (r,z) = (%.1f, %.1f), so\n", min2, vminr2*grid, vminz2*grid);
+      printf("Estimated pinch-off voltage = %.0f V\n", BV - min);
+      printf(" min2 = %.1f at (r,z) = (%.1f, %.1f), so\n",
+             min2, (vminr-1)*grid, (vminz-1)*grid);
       printf("   Full depletion (max pinch-off voltage) = %.0f\n", BV - min2);
     } else {
-      printf("\nEstimated depletion voltage = %.0f V\n", BV - min);
+      printf("Estimated depletion voltage = %.0f V\n", BV - min);
     }
-    printf("\nMinimum bulk field = %.1f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
-           Emin, rmin, zmin);
+    printf("Minimum bulk field = %.1f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
+           setup.Emin, setup.rmin, setup.zmin);
+  }
+ 
+  return 0;
+} /* main */
+
+/* -------------------------------------- ev_calc ------------------- */
+int ev_calc(MJD_Siggen_Setup *setup, MJD_Siggen_Setup *old_setup) {
+  int    i, j;
+  float  grid = setup->xtal_grid;
+  int    L  = lrint(setup->xtal_length/grid)+3;
+  int    R  = lrint(setup->xtal_radius/grid)+3;
+
+  if (!old_setup) {
+    printf("\n\n ---- starting EV calculation --- \n");
+    for (i = 1; i < L; i++) {
+      for (j = 1; j < R; j++) {
+        setup->v[0][i][j] = setup->v[1][i][j] = setup->xtal_HV/2.0;
+      }
+    }
+  }
+  if (old_setup) interpolate(setup, old_setup);
+  setup->fully_depleted = 1;
+  setup->bubble_volts = 0;
+
+  /* set boundary voltages */
+  for (i = 1; i < L; i++) {
+    for (j = 1; j < R; j++) {
+      if (setup->point_type[i][j] == HVC)
+        setup->v[0][i][j] = setup->v[1][i][j] = setup->xtal_HV;
+      if (setup->point_type[i][j] == PC)
+        setup->v[0][i][j] = setup->v[1][i][j] = 0.0;
+    }
+  }
+
+  if (!old_setup || !old_setup->fully_depleted) ev_relax_undep(setup);
+  else do_relax(setup, 1);
+  if (setup->write_field) write_ev(setup);
+
+  if (setup->fully_depleted) {
+    printf("Detector is fully depleted.\n");
+    /* save potential close to point contact, to use later when calculating depletion voltage */
+    for (i = 1; i < L; i++) {
+      for (j = 1; j < R; j++) {
+        setup->vsave[i][j] = fabs(setup->v[1][i][j]);
+      }
+    }
+  } else {
+    printf("Detector is not fully depleted.\n");
+    if (setup->bubble_volts > 0)
+      printf("Pinch-off bubble at %.1f V potential\n", setup->bubble_volts);
+    if (!old_setup) {
+      // write a little file that shows any undepleted voxels in the crystal
+      FILE *file = fopen("undepleted.txt", "w");
+      for (j = R-1; j > 0; j--) {
+	setup->undepleted[j][L-1] = '\0';
+	fprintf(file, "%s\n", setup->undepleted[j]+1);
+      }
+      fclose(file);
+    }
   }
 
   return 0;
-}
+} /* ev_calc */
 
+/* -------------------------------------- wp_calc ------------------- */
+int wp_calc(MJD_Siggen_Setup *setup, MJD_Siggen_Setup *old_setup) {
+  int    i, j, pinched_off = 0;
+  float  grid = setup->xtal_grid;
+  int    L  = lrint(setup->xtal_length/grid)+3;
+  int    R  = lrint(setup->xtal_radius/grid)+3;
+
+  if (!old_setup) {
+    printf("\n\n ---- starting WP calculation --- \n");
+    for (i = 1; i < L; i++) {
+      for (j = 1; j < R; j++) {
+        setup->v[0][i][j] = setup->v[1][i][j] = 0.01;
+      }
+    }
+  }
+  if (old_setup) interpolate(setup, old_setup);
+
+  /* set boundary voltages */
+  for (i = 1; i < L; i++) {
+    for (j = 1; j < R; j++) {
+      if (setup->point_type[i][j] == HVC)
+        setup->v[0][i][j] = setup->v[1][i][j] = 0.0;
+      else if (setup->point_type[i][j] == PC)
+        setup->v[0][i][j] = setup->v[1][i][j] = 1.0;
+      else if (setup->undepleted[j][i] == '*') {
+        setup->point_type[i][j] = PC;
+        setup->v[0][i][j] = setup->v[1][i][j] = 1.0;
+      } else if (setup->undepleted[j][i] == 'B') {
+        setup->point_type[i][j] = PINCHOFF;
+        pinched_off = 1;
+      }
+    }
+  }
+
+  if (pinched_off) wp_relax_undep(setup);
+  else do_relax(setup, 0);
+
+  if (setup->write_WP) write_wp(setup);
+
+  return 0;
+} /* wp_calc */
+
+/* -------------------------------------- report_config ------------------- */
 int report_config(FILE *fp_out, char *config_file_name) {
-
   char  *c, line[256];
   FILE  *file;
 
@@ -1433,4 +402,884 @@ int report_config(FILE *fp_out, char *config_file_name) {
   }
   fclose(file);
   return 0;
-}
+} /* report_config */
+
+/* -------------------------------------- write_ev ------------------- */
+int write_ev(MJD_Siggen_Setup *setup) {
+  int    i, j, new=1;
+  float  grid = setup->xtal_grid;
+  int    L  = lrint(setup->xtal_length/grid) + 2;
+  int    R  = lrint(setup->xtal_radius/grid) + 2;
+  float  r, z;
+  float  E_r, E_z, E;
+  FILE   *file;
+  double ***v = setup->v;
+
+  setup->Emin = 99999.9;
+  setup->rmin = setup->zmin = 999.9;
+
+  if (setup->impurity_z0 > 0) {
+    // swap voltages back to negative for n-type material
+    for (i=1; i<L; i++) {
+      for (j=1; j<R; j++) {
+        setup->v[new][i][j] = -setup->v[new][i][j];
+      }
+    }
+  }
+
+  /* write potential and field to output file */
+  if (!(file = fopen(setup->field_name, "w"))) {
+    printf("ERROR: Cannot open file %s for electric field...\n", setup->field_name);
+    return 1;
+  } else {
+    printf("Writing electric field data to file %s\n", setup->field_name);
+  }
+  /* copy configuration parameters to output file */
+  report_config(file, setup->config_file_name);
+  fprintf(file, "#\n# HV bias in fieldgen: %.1f V\n", setup->xtal_HV);
+  if (setup->fully_depleted) {
+    fprintf(file, "# Detector is fully depleted.\n");
+  } else {
+    fprintf(file, "# Detector is not fully depleted.\n");
+    if (setup->bubble_volts > 0.0f)
+      fprintf(file, "# Pinch-off bubble at %.0f V potential\n", setup->bubble_volts);
+  }
+  fprintf(file, "#\n## r (mm), z (mm), V (V),  E (V/cm), E_r (V/cm), E_z (V/cm)\n");
+  
+  for (j = 1; j < R; j++) {
+    r = (j-1) * grid;
+    for (i = 1; i < L; i++) {
+      z = (i-1) * grid;
+      // calc E in r-direction
+      if (j == 1) {
+        E_r = 0;
+      } else if (j == R) {
+        E_r = (v[new][i][j-1] - v[new][i][j])/(0.1*grid);
+      } else {
+        E_r = (v[new][i][j-1] - v[new][i][j+1])/(0.2*grid);
+      }
+      // calc E in z-direction
+      if (i == 1) {
+        E_z = (v[new][i][j] - v[new][i+1][j])/(0.1*grid);
+      } else if (i == L) {
+        E_z = (v[new][i-1][j] - v[new][i][j])/(0.1*grid);
+      } else {
+        E_z = (v[new][i-1][j] - v[new][i+1][j])/(0.2*grid);
+      }
+      E = sqrt(E_r*E_r + E_z*E_z);
+      fprintf(file, "%7.2f %7.2f %7.1f %7.1f %7.1f %7.1f\n",
+              r, z, v[new][i][j], E, E_r, E_z);
+
+      /* check for minimum field inside bulk of detector */
+      int k = 3.0/grid;
+      if (E > 0.1 && E < setup->Emin &&
+          i > k+1 && j < R-k-1 && i < L-k-1 &&
+          setup->point_type[i][j] == INSIDE &&
+          setup->point_type[i + k][j] == INSIDE &&  // point is at leat 3 mm from a boundary
+          setup->point_type[i - k][j] == INSIDE &&
+          setup->point_type[i][j + k] == INSIDE &&
+          (j < k+1 || setup->point_type[i][j - k] == INSIDE)) {
+        setup->Emin = E;
+        setup->rmin = r;
+        setup->zmin = z;
+      }
+    }
+    fprintf(file, "\n");
+  }
+  fclose(file);
+  printf("\n Minimum bulk field = %.1f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
+         setup->Emin, setup->rmin, setup->zmin);
+
+  if (1) { /* write point_type to output file */
+    file = fopen("fields/point_type.dat", "w");
+    for (j = 1; j < R; j++) {
+      for (i = 1; i < L; i++)
+        fprintf(file, "%7.2f %7.2f %2d\n",
+                (j-1)*grid, (i-1)*grid, setup->point_type[i][j]);
+      fprintf(file, "\n");
+    }
+    fclose(file);
+  }
+
+  return 0;
+ } /* write_ev */
+
+/* -------------------------------------- write_wp ------------------- */
+ int write_wp(MJD_Siggen_Setup *setup) {
+  int    i, j, new=1;;
+  float  grid = setup->xtal_grid;
+  int    L  = lrint(setup->xtal_length/grid) + 2;
+  int    R  = lrint(setup->xtal_radius/grid) + 2;
+  float  r, z;
+  FILE *file;
+
+  if (!(file = fopen(setup->wp_name, "w"))) {
+    printf("ERROR: Cannot open file %s for weighting potential...\n", setup->wp_name);
+    return 1;
+  } else {
+    printf("Writing weighting potential to file %s\n\n", setup->wp_name);
+  }
+
+  /* copy configuration parameters to output file */
+  report_config(file, setup->config_file_name);
+  fprintf(file, "#\n# HV bias in fieldgen: %.1f V\n", setup->xtal_HV);
+  if (setup->fully_depleted) {
+    fprintf(file, "# Detector is fully depleted.\n");
+  } else {
+    fprintf(file, "# Detector is not fully depleted.\n");
+    if (setup->bubble_volts > 0.0f)
+      fprintf(file, "# Pinch-off bubble at %.0f V potential\n", setup->bubble_volts);
+  }
+  fprintf(file, "#\n## r (mm), z (mm), WP\n");
+  for (j = 1; j < R; j++) {
+    r = (j-1) * grid;
+    for (i = 1; i < L; i++) {
+      z = (i-1) * grid;
+      fprintf(file, "%7.2f %7.2f %12.6e\n", r, z, setup->v[new][i][j]);
+    }
+    fprintf(file, "\n");
+  }
+  fclose(file);
+
+  return 0;
+ } /* write_wp */
+
+/* -------------------------------------- grid_init ------------------- */
+#define SQ(x) ((x)*(x))
+int grid_init(MJD_Siggen_Setup *setup) {
+  float  grid = setup->xtal_grid;
+  int    L  = lrint(setup->xtal_length/grid)+3;
+  int    R  = lrint(setup->xtal_radius/grid)+3;
+  int    i, j;
+  float  r, z;
+
+  /* first malloc arrays in setup */
+  if ((setup->impurity   = malloc(L * sizeof(*setup->impurity)))   == NULL ||
+      (setup->eps        = malloc(L * sizeof(*setup->eps)))        == NULL ||
+      (setup->eps_dr     = malloc(L * sizeof(*setup->eps_dr)))     == NULL ||
+      (setup->eps_dz     = malloc(L * sizeof(*setup->eps_dz)))     == NULL ||
+      (setup->v[0]       = malloc(L * sizeof(*setup->v[0])))       == NULL ||
+      (setup->v[1]       = malloc(L * sizeof(*setup->v[1])))       == NULL ||
+      (setup->undepleted = malloc(R * sizeof(*setup->undepleted))) == NULL ||
+      (setup->s1         = malloc(R * sizeof(*setup->s1)))         == NULL ||
+      (setup->s2         = malloc(R * sizeof(*setup->s2)))         == NULL ||
+      (setup->vsave      = malloc(L * sizeof(*setup->vsave)))      == NULL ||
+      (setup->point_type = malloc(L * sizeof(*setup->point_type))) == NULL) {
+    printf("malloc failed\n");
+    return -1;
+  }
+  /* start from i=1 so that i=0 can be used for reflection symmetry around r=0 or z=0 */
+  for (i = 1; i < L; i++) {
+    if ((setup->impurity[i]   = malloc(R * sizeof(**setup->impurity)))   == NULL ||
+        (setup->v[0][i]       = malloc(R * sizeof(**setup->v[0])))       == NULL ||
+	(setup->v[1][i]       = malloc(R * sizeof(**setup->v[1])))       == NULL ||
+	(setup->vsave[i]      = malloc(R * sizeof(**setup->vsave)))      == NULL ||
+	(setup->point_type[i] = malloc(R * sizeof(**setup->point_type))) == NULL) {
+      printf("malloc failed\n");
+      return -1;
+    }
+  }
+  for (i = 1; i < L; i++) {
+    if ((setup->eps[i]        = malloc(R * sizeof(**setup->eps)))    == NULL ||
+        (setup->eps_dr[i]     = malloc(R * sizeof(**setup->eps_dr))) == NULL ||
+        (setup->eps_dz[i]     = malloc(R * sizeof(**setup->eps_dz))) == NULL) {
+      printf("malloc failed\n");
+      return -1;
+    }
+    for (j = 0; j < R; j++)
+      setup->eps[i][j] = setup->eps_dz[i][j] = setup->eps_dr[i][j] = 16.0;
+  }
+  for (j = 0; j < R; j++) {
+    if ((setup->undepleted[j] = malloc(L * sizeof(**setup->undepleted))) == NULL) {
+      printf("malloc failed\n");
+      return -1;
+    }
+    memset(setup->undepleted[j], ' ', L);
+  }
+        
+  /* set up reflection symmetry around r=0 or z=0 */
+  setup->impurity[0]   = malloc(R * sizeof(**setup->impurity));
+  setup->v[0][0]   = setup->v[0][2];
+  setup->v[1][0]   = setup->v[1][2];
+  setup->eps[0]    = setup->eps[1];
+  setup->eps_dr[0] = setup->eps_dr[1];
+  setup->eps_dz[0] = setup->eps_dz[1];
+  setup->point_type[0] = setup->point_type[1];
+
+  /* ------------------------------------------------------------ */
+  /* weighting values for the relaxation alg. as a function of r
+     in the following we divide areas and volumes by pi
+     r_bin   rmax  A_top A_outside A_inside  volume  total_surf  out/top  tot/vol
+     0     1/2    1/4      1         0       1/4      1.5         4        6  << special case
+     1     3/2      2      3         1        2        8        3/2        4
+     2     5/2      4      5         3        4       16        5/4        4
+     3     7/2      6      7         5        6       24        7/6        4
+     r   r+0.5     2r    2r+1      2r-1      2r       8r     (2r+1)/2r     4
+     = 1+0.5/r
+  */
+  setup->s1[1] = 4.0;
+  setup->s2[1] = 0.0;
+  for (i=2; i<R; i++) {
+    setup->s1[i] = 1.0 + 0.5 / (double) (i-1);   //  for r+1
+    setup->s2[i] = 1.0 - 0.5 / (double) (i-1);   //  for r-1
+  }
+  setup->s2[1] = setup->s1[1]; // special case for reflection symm at r=0
+
+  /* set up point types for boundary conditions etc */
+  float lith  = setup->Li_thickness;
+  float zmax  = setup->xtal_length - lith;
+  float rmax  = setup->xtal_radius - lith;
+  float r1, z1, br, a, b;
+
+  for (i = 1; i < L; i++) {
+    z = (i-1) * grid;
+    z1 = zmax - z;  // distance from top of crystal
+    for (j = 1; j < R; j++) {
+      r = (j-1) * grid;
+      r1 = rmax - r;  // distance from outer radius
+
+      setup->point_type[i][j] = INSIDE;
+
+      // outside (HV) contact:
+      br = setup->hole_bullet_radius + 0.8*lith;
+      a = setup->hole_radius + lith - br;
+      b = zmax - setup->hole_length + br;
+      if (z >= zmax || r >= rmax ||
+          (r >= setup->wrap_around_radius && z <= lith) ||      // wrap-around  // COULD BE r >
+          /* check 45-degree bottom outer taper of crystal */
+          (z  <= setup->bottom_taper_length + 0.71*lith &&
+           r1 <= setup->bottom_taper_length + 0.71*lith - z) ||
+          /* check hole */
+          (r  <= setup->hole_radius + lith &&
+           z1 <= setup->hole_length &&  // note no lith added here, since it was subtracted from zmax
+            /* check hole bulletization */
+            (r <= a || z >= b || SQ(b-z) + SQ(a-r) <= SQ(br))) ||
+          /* check inner taper of hole */
+          (z1 <= setup->inner_taper_length &&
+           r  <= setup->hole_radius + lith +
+                  ((setup->inner_taper_length - z1) *
+                   setup->inner_taper_width / setup->inner_taper_length)) ||
+          /* check outer top taper of crystal */
+          (z1 <= setup->outer_taper_length &&
+           r1 <= ((setup->outer_taper_length - z1) *
+                   setup->outer_taper_width / setup->outer_taper_length)) ||
+          /* check 45-degree bottom outer taper of crystal */
+          (z  <= setup->bottom_taper_length + 0.71*lith &&
+           r1 <= setup->bottom_taper_length + 0.71*lith - z))
+        setup->point_type[i][j] = HVC;
+
+      /* check top and bottom bulletizations */
+      br = setup->top_bullet_radius - lith * 0.7;
+      if (z1 <= br &&r1 <= br &&
+          SQ(br - r1) + SQ(br - z1) >= br*br)
+        setup->point_type[i][j] = HVC;
+      br = setup->bottom_bullet_radius - lith * 0.7;
+      if (z <= br + lith && r1 <= br &&
+          SQ(br - r1) + SQ(br - z + lith) >= br*br)
+        setup->point_type[i][j] = HVC;
+
+      if (setup->point_type[i][j] != INSIDE) continue;
+
+      /* check for inside (point) contact, with optional bulletization */
+      if (z <= setup->pc_length && r <= setup->pc_radius) {
+        if (setup->bulletize_PC) {
+          br = setup->pc_radius;
+          // if length <= radius, use length as bulletization radius
+          if (setup->pc_length <= setup->pc_radius) br = setup->pc_length;
+          a = setup->pc_radius - br;
+          b = setup->pc_length - br;
+          if (r < a || z < b || SQ(b-z) + SQ(a-r) <= SQ(br)) setup->point_type[i][j] = PC;
+        }
+        else {
+          setup->point_type[i][j] = PC;
+        }
+      }
+      /* ---------------------------------------------- 
+         edges of inside contact; if the PC radius and/or length is not in the middle
+           of a pixel, we want to modify interpolation of V in surrounding pixels...
+           in this case, the radius/length > grid point, so it modifies the
+           interpolation for the next point out
+           // FIXME: Check for adjacent ditch *//*
+        if (r == rrc[z] && drrc[z] < -0.05) {
+          bulk[z][r] = 1;  // flag for radial edge of PC
+          frrc[z] = -1.0/drrc[z];  // interpolation weight for pixel at (r-1)
+          // only part of the pixel has volume charge density, the rest is contact
+          vfraction[z][r] *= -2.0*drrc[z];
+        }
+        // z edge of inside contact; if the PC length is not in the middle
+        //   of a pixel, we want to modify interpolation of V in surrounding pixels
+        if (z == LC && dLC < -0.05) {
+          bulk[z][r] = 2;  // flag for z edge of PC
+          fLC = -1.0/dLC;  // interpolation weight for pixel at (z-1)
+          // only part of the pixel has volume charge density, the rest is contact
+          vfraction[z][r] *= -2.0*dLC;
+        }
+        ---------------------------------------------- */
+
+      /* check for inside ditch
+         boundary condition at Ge-vacuum interface:
+         epsilon0 * E_vac = espilon_Ge * E_Ge
+      */
+      if (setup->ditch_depth  > 0 && z <= setup->ditch_depth  &&     // COULD BE z <
+          r < setup->wrap_around_radius &&                           // COULD BE r <=
+          r > setup->wrap_around_radius - setup->ditch_thickness) {  // COULD BE r >=
+        setup->point_type[i][j] = DITCH;
+        setup->eps[i][j] = setup->eps_dz[i][j] = setup->eps_dr[i][j] = 1.0;
+      }
+
+    }
+  }
+
+  /* for pixels adjacent to the ditch, set point_type to DITCH_EDGE
+     andfor z=0, set flag for passivated surface */
+  for (i = 1; i < L; i++) {
+    for (j = 1; j < R; j++) {
+      setup->eps_dr[i][j-1] = (setup->eps[i][j-1] + setup->eps[i][j]) / 2.0f;
+      setup->eps_dz[i-1][j] = (setup->eps[i-1][j] + setup->eps[i][j]) / 2.0f;
+      if (setup->point_type[i][j] == INSIDE &&
+          (setup->point_type[i-1][j] == DITCH ||
+           setup->point_type[i][j-1] == DITCH ||
+           setup->point_type[i][j+1] == DITCH)) setup->point_type[i][j] = DITCH_EDGE;
+      if (i == 1 && setup->point_type[i][j] == INSIDE &&
+          (j-1) * grid < setup->wrap_around_radius) setup->point_type[i][j] = PASSIVE;
+    }
+    setup->eps_dr[i][0] = setup->eps_dr[i][1];
+  }
+
+  /* set up impurity array */
+  double *imp_z, imp_ra = 0, imp_rm = 1;
+  double e_over_E = 11.310; // e/epsilon; for 1 mm2, charge units 1e10 e/cm3, espilon = 16*epsilon0
+  /* malloc local array */
+  if ((imp_z  = malloc(L * sizeof(*imp_z))) == NULL) {
+    printf("malloc failed\n");
+    return -1;
+  }
+
+  if (setup->rho_z_spe[0] == 0) {
+    for (i = 1; i < L; i++) {
+      z = (i-1) * grid;
+      imp_z[i] = e_over_E * grid*grid / 4.0 *
+                 (setup->impurity_z0 +
+                  setup->impurity_gradient * z * 0.1 +
+                  setup->impurity_quadratic *
+                  (1.0 - SQ(z - setup->xtal_length/2.0) / SQ(setup->xtal_length/2.0)));
+    }
+  } else {
+    for (i = 1; i < L; i++)
+      imp_z[i] = e_over_E * grid*grid / 4.0 * setup->rho_z_spe[(int) ((i-1) * grid)];
+  }
+  if (0) printf("imp_z: %.2f %.2f %.2f\n",
+                 imp_z[1]/(e_over_E * grid*grid / 4.0),
+                 imp_z[L/2]/(e_over_E * grid*grid / 4.0),
+                 imp_z[L-2]/(e_over_E * grid*grid / 4.0));
+  for (j = 1; j < R; j++) {
+    r = (j-1) * grid;
+    if (setup->impurity_rpower > 0.1) {
+      imp_ra = setup->impurity_radial_add * e_over_E *
+        pow((double) r / setup->xtal_radius, setup->impurity_rpower);
+      imp_rm = 1.0 + (setup->impurity_radial_mult - 1.0f) *
+        pow((double) r / setup->xtal_radius, setup->impurity_rpower);
+    }
+    for (i = 1; i < L; i++)  setup->impurity[i][j] = imp_z[i] * imp_rm + imp_ra;
+    if (setup->point_type[1][j] == PASSIVE) {
+      setup->impurity[1][j] += setup->impurity_surface * e_over_E * grid;
+      // special hack for Ponama 1 in GALATEA?
+      // if (r < 8) setup->impurity[1][j] -= 2.0 * e_over_E * grid;
+      // setup->impurity[1][j] -= 0.3 * 13.0/r * e_over_E * grid;
+      // setup->impurity[1][j] -= 0.3 * (1.0 - r/15.0) * e_over_E * grid;
+    }
+  }
+
+  /* free local and no-longer-needed arrays */
+  free(imp_z);
+  for (i = 1; i < L; i++) free(setup->eps[i]);
+  free(setup->eps);
+
+  return 0;   
+} /* grid_init */
+#undef SQ
+
+/* -------------------------------------- do_relax ------------------- */
+int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
+  int    old = 1, new = 0, iter, r, z;
+  float  grid = setup->xtal_grid;
+  int    L  = lrint(setup->xtal_length/grid)+1;
+  int    R  = lrint(setup->xtal_radius/grid)+1;
+  double eps_sum, v_sum, mean, save_dif;
+  double dif, sum_dif, max_dif;
+  double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
+  double *s1 = setup->s1, *s2 = setup->s2;
+  double e_over_E = 11.310; // e/epsilon; for 1 mm2, charge units 1e10 e/cm3, espilon = 16*epsilon0
+
+
+  if (setup->vacuum_gap > 0) {   // save impurity value along passivated surface
+    for (r = 1; r < R; r++)
+      setup->impurity[0][r] = setup->impurity[1][r];
+  }
+
+  for (iter = 0; iter < setup->max_iterations; iter++) {
+
+    // the following definition of the factor for over-relaxation improves convergence
+    //     time by a factor ~ 70-120 for a 2kg ICPC detector, grid = 0.1 mm
+    //   OR_fact increases with increasing volxel count (L*R)
+    //         and with increasing iteration number
+    //   0.997 is maximum asymptote for very large pixel count and iteration number
+    double OR_fact = ((0.997 - 600.0/(L*R)) * (1.0 - 0.9/(double)(1+iter/6)));
+    if (600.0/(L*R) > 0.5)
+      OR_fact = (0.5 * (1.0 - 0.9/(double)(1+iter/6)));
+    if (iter < 2) OR_fact = 0.0;
+
+    old = new;
+    new = 1 - new;
+    sum_dif = 0;
+    max_dif = 0;
+
+    if (setup->vacuum_gap > 0) {   // modify impurity value along passivated surface
+      for (r = 1; r < R; r++)      //   due to surface charge induced by capacitance
+        if (ev_calc)
+          setup->impurity[1][r] = setup->impurity[0][r] +
+            v[old][1][r] * 5.52e-4 * e_over_E * grid / setup->vacuum_gap;
+        else 
+          setup->impurity[1][r] = v[old][1][r] * 5.52e-4 * e_over_E * grid / setup->vacuum_gap;
+    }
+
+    /* start from z=1 and r=1 so that (z,r)=0 can be
+       used for reflection symmetry around r=0 or z=0 */
+    for (z = 1; z < L; z++) {
+      /* manage r=0 reflection symmetry */
+      setup->v[old][z][0] = setup->v[old][z][2];
+
+      for (r = 1; r < R; r++) {
+        if (setup->point_type[z][r] < INSIDE) continue;   // HV or point contact
+        save_dif = v[old][z][r] - v[new][z][r];      // step difference from previous iteration
+
+        if (setup->point_type[z][r] < DITCH) {       // normal bulk or passivated surface, no complications
+          v_sum = (v[old][z+1][r] + v[old][z][r+1]*s1[r] +
+                   v[old][z-1][r] + v[old][z][r-1]*s2[r]);
+          eps_sum = 4;
+          if (r == 1) eps_sum = 2 + s1[r] + s2[r];
+        } else if (setup->point_type[z][r] >= DITCH) {  // in or adjacent to the ditch
+          v_sum = (v[old][z+1][r]*eps_dz[z  ][r] + v[old][z][r+1]*eps_dr[z][r  ]*s1[r] +
+                   v[old][z-1][r]*eps_dz[z-1][r] + v[old][z][r-1]*eps_dr[z][r-1]*s2[r]);
+          eps_sum = (eps_dz[z][r]   + eps_dr[z][r]  *s1[r] +
+                     eps_dz[z-1][r] + eps_dr[z][r-1]*s2[r]);
+          /*
+        } else if (setup->point_type[z][r] == 1) {    // interpolated radial edge of point contact
+          // since the PC radius is not in the middle of a pixel,
+          //   use a modified weight for the interpolation to (r-1)
+          v_sum = v[old][z+1][r]*eps_dz[z][r] + v[old][z][r+1]*eps_dr[z][r]*s1[r] +
+            v[old][z][r-1]*eps_dr[z][r-1]*s2[r];// *frrc[z];
+          eps_sum = eps_dz[z][r] + eps_dr[z][r]*s1[r] + eps_dr[z][r-1]*s2[r];// *frrc[z];
+          if (z > 0) {
+            v_sum += v[old][z-1][r]*eps_dz[z-1][r];
+            eps_sum += eps_dz[z-1][r];
+          } else {
+            v_sum += v[old][z+1][r]*eps_dz[z][r];  // reflection symm around z=0
+            eps_sum += eps_dz[z][r];
+          }
+        } else if (setup->point_type[z][r] == 2) {    // interpolated z edge of point contact
+          // since the PC length is not in the middle of a pixel,
+          //   use a modified weight for the interpolation to (z-1)
+          v_sum = v[old][z+1][r]*eps_dz[z][r] + v[old][z][r+1]*eps_dr[z][r]*s1[r] +
+            v[old][z-1][r]*eps_dz[z-1][r];// *fLC;
+          eps_sum = eps_dz[z][r] + eps_dr[z][r]*s1[r] + eps_dz[z-1][r];// *fLC;
+          if (r > 0) {
+            v_sum += v[old][z][r-1]*eps_dr[z][r-1]*s2[r];
+            eps_sum += eps_dr[z][r-1]*s2[r];
+          } else {
+            v_sum += v[old][z][r+1]*eps_dr[z][r]*s1[r];  // reflection symm around r=0
+            eps_sum += eps_dr[z][r]*s1[r];
+          }
+          // check for cases where the PC corner needs modification in both r and z
+          if (z == LC && setup->point_type[z-1][r] == 1) {
+            v_sum += v[old][z][r-1]*eps_dr[z][r-1]*s2[r];// *(frrc[z]-1.0);
+            eps_sum += eps_dr[z][r-1]*s2[r];// *(frrc[z]-1.0);
+          }
+          */
+        }
+
+        // calculate the interpolated mean potential and the effect of the space charge
+        mean = v_sum / eps_sum;
+        if (ev_calc ||
+            (setup->vacuum_gap > 0 && z == 1))
+          v[new][z][r] = mean + setup->impurity[z][r];
+        else
+          v[new][z][r] = mean;
+
+        // calculate difference from last iteration, for convergence check
+        dif = v[old][z][r] - v[new][z][r];
+        if (dif < 0) dif = -dif;
+        sum_dif += dif;
+        if (max_dif < dif) max_dif = dif;
+        // do over-relaxation
+        v[new][z][r] += OR_fact*save_dif;
+
+        //if (v[new][z][r] < 0) v[new][z][r] = 0;
+      }
+    }
+
+    // report results for some iterations
+    if (iter < 10 || (iter < 600 && iter%100 == 0) || iter%1000 == 0) {
+      if (0 && ev_calc) {
+        printf("%5d %d %d %.10f %.10f\n", iter, old, new, max_dif, sum_dif/(L-2)/(R-2));
+      } else {
+        printf("%5d %d %d %.10f %.10f ; %.10f %.10f\n",
+               iter, old, new, max_dif, sum_dif/(L-2)/(R-2),
+               v[new][L/2][R/2], v[new][L/3][R/3]);
+      }
+    }
+    // check for convergence
+    if ( ev_calc && max_dif < 0.00000008) break;
+    if (!ev_calc && max_dif < 0.0000000001) break;
+
+  }
+
+  printf(">> %d %.16f\n\n", iter, sum_dif);
+  if (setup->vacuum_gap > 0) {   // restore impurity value along passivated surface
+    for (r = 1; r < R; r++)
+      setup->impurity[1][r] = setup->impurity[0][r];
+  }
+
+  return 0;
+} /* do_relax */
+
+/* -------------------------------------- ev_relax_undep ------------------- */
+int ev_relax_undep(MJD_Siggen_Setup *setup) {
+  int    old = 1, new = 0, iter, r, z;
+  float  grid = setup->xtal_grid;
+  int    L  = lrint(setup->xtal_length/grid)+1;
+  int    R  = lrint(setup->xtal_radius/grid)+1;
+  double eps_sum, v_sum, mean, save_dif, min;
+  double dif, sum_dif, max_dif, bubble_volts, bv2, bv3;
+  double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
+  double *s1 = setup->s1, *s2 = setup->s2;
+  char   **undep = setup->undepleted;
+  double e_over_E = 11.310; // e/epsilon; for 1 mm2, charge units 1e10 e/cm3, espilon = 16*epsilon0
+
+
+  if (setup->vacuum_gap > 0) {   // save impurity value along passivated surface
+    for (r = 1; r < R; r++)
+      setup->impurity[0][r] = setup->impurity[1][r];
+  }
+
+#ifndef BUBBLE1
+  /* initialise the undepleted array for use with bubble depletion */
+  for (z = 1; z < L; z++) {
+    for (r = 1; r < R; r++) {
+      if (setup->point_type[z][r] >= INSIDE) undep[r][z] = 0;
+    }
+  }
+#endif
+
+  for (iter = 0; iter < setup->max_iterations; iter++) {
+
+    double OR_fact = ((0.997 - 600.0/(L*R)) * (1.0 - 0.9/(double)(1+iter/6)));
+    if (600.0/(L*R) > 0.5)
+      OR_fact = (0.5 * (1.0 - 0.9/(double)(1+iter/6)));
+    if (iter < 2) OR_fact = 0.0;
+
+    old = new;
+    new = 1 - new;
+    sum_dif = 0;
+    max_dif = 0;
+    bubble_volts = 0;
+    //if (bv3 > 0) bubble_volts = bv2/bv3 + 0.01;
+    bv2 = 0;
+    bv3 = 0;
+
+    if (setup->vacuum_gap > 0) {   // modify impurity value along passivated surface
+      for (r = 1; r < R; r++)      //   due to surface charge induced by capacitance
+        setup->impurity[1][r] = setup->impurity[0][r] +
+          v[old][1][r] * 5.52e-4 * e_over_E * grid / setup->vacuum_gap;
+    }
+
+    /* start from z=1 and r=1 so that (z,r)=0 can be
+       used for reflection symmetry around r=0 or z=0 */
+    for (z = 1; z < L; z++) {
+      /* manage r=0 reflection symmetry */
+      setup->v[old][z][0] = setup->v[old][z][2];
+
+      for (r = 1; r < R; r++) {
+        if (setup->point_type[z][r] < INSIDE) continue;   // HV or point contact
+        save_dif = v[old][z][r] - v[new][z][r];      // step difference from previous iteration
+
+        if (setup->point_type[z][r] < DITCH) {       // normal bulk or passivated surface, no complications
+          v_sum = (v[old][z+1][r] + v[old][z][r+1]*s1[r] +
+                   v[old][z-1][r] + v[old][z][r-1]*s2[r]);
+          eps_sum = 4;
+          if (r == 1) eps_sum = 2 + s1[r] + s2[r];
+        } else if (setup->point_type[z][r] >= DITCH) {  // in or adjacent to the ditch
+          v_sum = (v[old][z+1][r]*eps_dz[z  ][r] + v[old][z][r+1]*eps_dr[z][r  ]*s1[r] +
+                   v[old][z-1][r]*eps_dz[z-1][r] + v[old][z][r-1]*eps_dr[z][r-1]*s2[r]);
+          eps_sum = (eps_dz[z][r]   + eps_dr[z][r]  *s1[r] +
+                     eps_dz[z-1][r] + eps_dr[z][r-1]*s2[r]);
+        }
+
+        // calculate the interpolated mean potential and the effect of the space charge
+        min = fminf(fminf(v[old][z+1][r], v[old][z][r+1]),
+                    fminf(v[old][z-1][r], v[old][z][r-1]));
+        mean = v_sum / eps_sum;
+        v[new][z][r] = mean + setup->impurity[z][r];
+
+#ifndef BUBBLE1
+        undep[r][z] /= 2;
+        if (v[new][z][r] <= 0) {
+          v[new][z][r] = 0;
+          undep[r][z] = 4;  // do not do over-relaxation for 3 iterations
+        } else if (v[new][z][r] <= min) {
+          if (bubble_volts == 0) bubble_volts = min + 0.01;
+          v[new][z][r] = bubble_volts;
+          bv2 += min;
+          bv3 += 1.0;
+          undep[r][z] = 8;  // do not do over-relaxation for 4 iterations
+        }
+#else
+	undep[r][z] = '.';
+        if (v[new][z][r] <= 0) {
+          v[new][z][r] = 0;
+          undep[r][z] = '*';
+          save_dif = 0;  // do not do over-relaxation
+        } else if (v[new][z][r] < min) {
+          if (bubble_volts == 0) bubble_volts = min + 0.01;
+          v[new][z][r] = bubble_volts;
+          undep[r][z] = '*';
+          save_dif = 0;  // do not do over-relaxation
+        }
+#endif
+
+        // calculate difference from last iteration, for convergence check
+        dif = v[old][z][r] - v[new][z][r];
+        if (dif < 0) dif = -dif;
+        sum_dif += dif;
+        if (max_dif < dif) max_dif = dif;
+        // do over-relaxation
+#ifndef BUBBLE1
+        if (!undep[r][z])
+#endif
+        v[new][z][r] += OR_fact*save_dif;
+      }
+    }
+
+    // report results for some iterations
+    if (iter < 10 || (iter < 600 && iter%100 == 0) || iter%1000 == 0) {
+      if (0) {
+        printf("%5d %d %d %.10f %.10f\n", iter, old, new, max_dif, sum_dif/(L-2)/(R-2));
+      } else {
+        printf("%5d %d %d %.10f %.10f ; %.10f %.10f bubble %.2f %.0f\n",
+               iter, old, new, max_dif, sum_dif/(L-2)/(R-2),
+               v[new][L/2][R/2], v[new][L/3][R/3], bubble_volts, bv3);
+      }
+    }
+    // check for convergence
+    if (max_dif < 0.00000008) break;
+ 
+  }
+  printf(">> %d %.16f\n\n", iter, sum_dif);
+
+  setup->bubble_volts = bubble_volts;
+  setup->fully_depleted = 1;
+  for (r=1; r<R; r++) {
+    for (z=1; z<L; z++) {
+#ifndef BUBBLE1
+      if (setup->point_type[z][r] < INSIDE) {
+        undep[r][z] = ' ';
+      } else if (undep[r][z] == 0) {
+        undep[r][z] = '.';
+      } else {
+        if (undep[r][z] > 4) undep[r][z] = 'B';  // identifies pinch-off
+        else undep[r][z] = '*';
+        setup->fully_depleted = 0;
+      }
+#else
+     if (undep[r][z] == '*') {
+        setup->fully_depleted = 0;
+        if (v[new][z][r] > 0.001) undep[r][z] = 'B';  // identifies pinch-off
+      }
+#endif
+    }
+  }
+
+  printf("bubble %.1f\n", bubble_volts);
+  if (setup->vacuum_gap > 0) {   // restore impurity value along passivated surface
+    for (r = 1; r < R; r++)
+      setup->impurity[1][r] = setup->impurity[0][r];
+  }
+
+  return 0;
+} /* ev_relax_undep */
+
+/* -------------------------------------- wp_relax_undep ------------------- */
+int wp_relax_undep(MJD_Siggen_Setup *setup) {
+  int    old = 1, new = 0, iter, r, z;
+  float  grid = setup->xtal_grid;
+  int    L  = lrint(setup->xtal_length/grid)+1;
+  int    R  = lrint(setup->xtal_radius/grid)+1;
+  double eps_sum, v_sum, mean, save_dif, pinched_sum1, pinched_sum2;
+  double dif, sum_dif, max_dif;
+  double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
+  double *s1 = setup->s1, *s2 = setup->s2;
+  double e_over_E = 11.310; // e/epsilon; for 1 mm2, charge units 1e10 e/cm3, espilon = 16*epsilon0
+
+
+  if (setup->vacuum_gap > 0) {   // save impurity value along passivated surface
+    for (r = 1; r < R; r++)
+      setup->impurity[0][r] = setup->impurity[1][r];
+  }
+
+  for (iter = 0; iter < setup->max_iterations; iter++) {
+
+   double OR_fact = ((0.997 - 600.0/(L*R)) * (1.0 - 0.9/(double)(1+iter/6)));
+    if (600.0/(L*R) > 0.5)
+      OR_fact = (0.5 * (1.0 - 0.9/(double)(1+iter/6)));
+    if (iter < 2) OR_fact = 0.0;
+
+    old = new;
+    new = 1 - new;
+    sum_dif = 0;
+    max_dif = 0;
+    pinched_sum1 = pinched_sum2 = 0.0;
+
+    if (setup->vacuum_gap > 0) {   // modify impurity value along passivated surface
+      for (r = 1; r < R; r++)      //   due to surface charge induced by capacitance
+        setup->impurity[1][r] = v[old][1][r] * 5.52e-4 * e_over_E * grid / setup->vacuum_gap;
+    }
+
+    /* start from z=1 and r=1 so that (z,r)=0 can be
+       used for reflection symmetry around r=0 or z=0 */
+    for (z = 1; z < L; z++) {
+      /* manage r=0 reflection symmetry */
+      setup->v[old][z][0] = setup->v[old][z][2];
+
+      for (r = 1; r < R; r++) {
+        if (setup->point_type[z][r] < INSIDE) continue;   // HV or point contact
+        save_dif = v[old][z][r] - v[new][z][r];      // step difference from previous iteration
+
+        if (setup->point_type[z][r] < PINCHOFF) {       // normal bulk or passivated surface, no complications
+          v_sum = (v[old][z+1][r] + v[old][z][r+1]*s1[r] +
+                   v[old][z-1][r] + v[old][z][r-1]*s2[r]);
+          eps_sum = 4;
+          if (r == 1) eps_sum = 2 + s1[r] + s2[r];
+        } else if (setup->point_type[z][r] == PINCHOFF) {  // in or adjacent to the ditch
+          if (setup->point_type[z+1][r] < PINCHOFF) {
+            pinched_sum1 += v[old][z+1][r]*eps_dz[z][r];
+            pinched_sum2 += eps_dz[z][r];
+          }
+          if (setup->point_type[z][r+1] < PINCHOFF) {
+            pinched_sum1 += v[old][z][r+1]*eps_dr[z][r]*s1[r];
+            pinched_sum2 += eps_dr[z][r]*s1[r];
+          }
+          if (setup->point_type[z-1][r] < PINCHOFF) {
+            pinched_sum1 += v[old][z-1][r]*eps_dz[z-1][r];
+            pinched_sum2 += eps_dz[z-1][r];
+          }
+          if (setup->point_type[z][r-1] < PINCHOFF) {
+            pinched_sum1 += v[old][z][r-1]*eps_dr[z][r-1]*s2[r];
+            pinched_sum2 += eps_dr[z][r-1]*s2[r];
+          }
+          v_sum = pinched_sum1;
+          eps_sum = pinched_sum2;
+        } else if (setup->point_type[z][r] >= DITCH) {  // in or adjacent to the ditch
+          v_sum = (v[old][z+1][r]*eps_dz[z  ][r] + v[old][z][r+1]*eps_dr[z][r  ]*s1[r] +
+                   v[old][z-1][r]*eps_dz[z-1][r] + v[old][z][r-1]*eps_dr[z][r-1]*s2[r]);
+          eps_sum = (eps_dz[z][r]   + eps_dr[z][r]  *s1[r] +
+                     eps_dz[z-1][r] + eps_dr[z][r-1]*s2[r]);
+        }
+
+        if (setup->point_type[z][r] != PINCHOFF) {
+          // calculate the interpolated mean potential and the effect of the space charge
+          mean = v_sum / eps_sum;
+          if (setup->vacuum_gap > 0 && z == 1)
+            v[new][z][r] = mean + setup->impurity[z][r];
+          else
+            v[new][z][r] = mean;
+
+          // calculate difference from last iteration, for convergence check
+          dif = v[old][z][r] - v[new][z][r];
+          if (dif < 0) dif = -dif;
+          sum_dif += dif;
+          if (max_dif < dif) max_dif = dif;
+          // do over-relaxation
+          v[new][z][r] += OR_fact*save_dif;
+        }
+      }
+    }
+    if (pinched_sum2 > 0.1) {
+      mean = pinched_sum1 / pinched_sum2;
+      for (z=1; z<L; z++) {
+        for (r=1; r<R; r++) {
+          if (setup->point_type[z][r] == PINCHOFF) {
+            v[new][z][r] = mean;
+            dif = v[old][z][r] - v[new][z][r];
+            if (dif < 0) dif = -dif;
+            sum_dif += dif;
+            if (max_dif < dif) max_dif = dif;
+          }
+        }
+      }
+    }
+
+    // report results for some iterations
+    if (iter < 10 || (iter < 600 && iter%100 == 0) || iter%1000 == 0) {
+      printf("%5d %d %d %.10f %.10f ; %.10f %.10f\n",
+             iter, old, new, max_dif, sum_dif/(L-2)/(R-2),
+             v[new][L/2][R/2], v[new][L/3][R/3]);
+    }
+    // check for convergence
+    if (max_dif < 0.0000000001) break;
+
+  }
+
+  printf(">> %d %.16f\n\n", iter, sum_dif);
+  if (setup->vacuum_gap > 0) {   // restore impurity value along passivated surface
+    for (r = 1; r < R; r++)
+      setup->impurity[1][r] = setup->impurity[0][r];
+  }
+
+  return 0;
+} /* wp_relax_undep */
+
+/* -------------------------------------- interpolate ------------------- */
+int interpolate(MJD_Siggen_Setup *setup, MJD_Siggen_Setup *old_setup) {
+  int    n, i, j, i2, j2, zmin, rmin, zmax, rmax;
+  int    L  = lrint(old_setup->xtal_length/old_setup->xtal_grid)+3;
+  int    R  = lrint(old_setup->xtal_radius/old_setup->xtal_grid)+3;
+  int    L2 = lrint(setup->xtal_length/setup->xtal_grid)+3;
+  int    R2 = lrint(setup->xtal_radius/setup->xtal_grid)+3;
+  float  f, f1r, f1z, f2r, f2z;
+  double ***v = setup->v, **ov = old_setup->v[1];
+
+  /* the previous calculation was on a coarser grid...
+     now copy/expand the potential to the new finer grid
+  */
+  n = (int) (old_setup->xtal_grid / setup->xtal_grid + 0.5);
+  f = 1.0 / (float) n;
+  printf("\ngrid %.4f -> %.4f; ratio = %d %.3f\n\n",
+         old_setup->xtal_grid, setup->xtal_grid, n, f);
+  for (i = i2 = 1; i < L-1; i++) {
+    zmin = i2;
+    zmax = i2 + n;
+    if (zmax > L2-1) zmax = L2-1;
+    for (j = j2 = 1; j < R-1; j++) {
+      f1z = 0.0;
+      rmin = j2;
+      rmax = j2 + n;
+      if (rmax > R2-1) rmax = R2-1;
+      for (i2 = zmin; i2 < zmax; i2++) {
+        f2z = 1.0 - f1z;
+        f1r = 0.0;
+        for (j2 = rmin; j2 < rmax; j2++) {
+          f2r = 1.0 - f1r;
+          v[0][i2][j2] = v[1][i2][j2] =      // linear interpolation
+            f2z*f2r*ov[i][j  ] + f1z*f2r*ov[i+1][j  ] +
+            f2z*f1r*ov[i][j+1] + f1z*f1r*ov[i+1][j+1];
+          f1r += f;
+        }
+        f1z += f;
+      }
+      j2 = rmax;
+    }
+    i2 = zmax;
+  }
+
+  return 0;
+} /* interpolate */
