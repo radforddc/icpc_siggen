@@ -805,25 +805,33 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
   float  grid = setup->xtal_grid;
   int    L  = lrint(setup->xtal_length/grid)+1;
   int    R  = lrint(setup->xtal_radius/grid)+1;
-  double eps_sum, v_sum, mean, save_dif;
+  double eps_sum, v_sum, save_dif;
   double dif, sum_dif, max_dif;
   double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
   double *s1 = setup->s1, *s2 = setup->s2;
   double e_over_E = 11.310; // e/epsilon; for 1 mm2, charge units 1e10 e/cm3, espilon = 16*epsilon0
 
 
-  if (setup->vacuum_gap > 0) {   // save impurity value along passivated surface
+  if (ev_calc) {
+    // for field calculation, save impurity value along passivated surface
     for (r = 1; r < R; r++)
       setup->impurity[0][r] = setup->impurity[1][r];
+  } else {
+    // for WP calculation, clear all impurity values
+    for (z = 0; z < L; z++) {
+      for (r = 1; r < R; r++) {
+        setup->impurity[z][r] = 0;
+      }
+    }
   }
 
   for (iter = 0; iter < setup->max_iterations; iter++) {
 
-    // the following definition of the factor for over-relaxation improves convergence
-    //     time by a factor ~ 70-120 for a 2kg ICPC detector, grid = 0.1 mm
-    //   OR_fact increases with increasing volxel count (L*R)
-    //         and with increasing iteration number
-    //   0.997 is maximum asymptote for very large pixel count and iteration number
+    /* the following definition of the factor for over-relaxation improves convergence
+           time by a factor ~ 70-120 for a 2kg ICPC detector, grid = 0.1 mm
+         OR_fact increases with increasing volxel count (L*R)
+               and with increasing iteration number
+         0.997 is maximum asymptote for very large pixel count and iteration number */
     double OR_fact = ((0.997 - 600.0/(L*R)) * (1.0 - 0.9/(double)(1+iter/6)));
     if (600.0/(L*R) > 0.5)
       OR_fact = (0.5 * (1.0 - 0.9/(double)(1+iter/6)));
@@ -836,11 +844,8 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
 
     if (setup->vacuum_gap > 0) {   // modify impurity value along passivated surface
       for (r = 1; r < R; r++)      //   due to surface charge induced by capacitance
-        if (ev_calc)
-          setup->impurity[1][r] = setup->impurity[0][r] +
-            v[old][1][r] * 5.52e-4 * e_over_E * grid / setup->vacuum_gap;
-        else 
-          setup->impurity[1][r] = v[old][1][r] * 5.52e-4 * e_over_E * grid / setup->vacuum_gap;
+        setup->impurity[1][r] = setup->impurity[0][r] -
+          v[old][1][r] * 5.52e-4 * e_over_E * grid / setup->vacuum_gap;
     }
 
     /* start from z=1 and r=1 so that (z,r)=0 can be
@@ -856,55 +861,24 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
         if (setup->point_type[z][r] < DITCH) {       // normal bulk or passivated surface, no complications
           v_sum = (v[old][z+1][r] + v[old][z][r+1]*s1[r] +
                    v[old][z-1][r] + v[old][z][r-1]*s2[r]);
-          eps_sum = 4;
-          if (r == 1) eps_sum = 2 + s1[r] + s2[r];
+          if (r > 1)
+            eps_sum = 4;
+          else
+            eps_sum = 2 + s1[r] + s2[r];
         } else if (setup->point_type[z][r] >= DITCH) {  // in or adjacent to the ditch
           v_sum = (v[old][z+1][r]*eps_dz[z  ][r] + v[old][z][r+1]*eps_dr[z][r  ]*s1[r] +
                    v[old][z-1][r]*eps_dz[z-1][r] + v[old][z][r-1]*eps_dr[z][r-1]*s2[r]);
           eps_sum = (eps_dz[z][r]   + eps_dr[z][r]  *s1[r] +
                      eps_dz[z-1][r] + eps_dr[z][r-1]*s2[r]);
-          /*
-        } else if (setup->point_type[z][r] == 1) {    // interpolated radial edge of point contact
-          // since the PC radius is not in the middle of a pixel,
-          //   use a modified weight for the interpolation to (r-1)
-          v_sum = v[old][z+1][r]*eps_dz[z][r] + v[old][z][r+1]*eps_dr[z][r]*s1[r] +
-            v[old][z][r-1]*eps_dr[z][r-1]*s2[r];// *frrc[z];
-          eps_sum = eps_dz[z][r] + eps_dr[z][r]*s1[r] + eps_dr[z][r-1]*s2[r];// *frrc[z];
-          if (z > 0) {
-            v_sum += v[old][z-1][r]*eps_dz[z-1][r];
-            eps_sum += eps_dz[z-1][r];
-          } else {
-            v_sum += v[old][z+1][r]*eps_dz[z][r];  // reflection symm around z=0
-            eps_sum += eps_dz[z][r];
-          }
-        } else if (setup->point_type[z][r] == 2) {    // interpolated z edge of point contact
-          // since the PC length is not in the middle of a pixel,
-          //   use a modified weight for the interpolation to (z-1)
-          v_sum = v[old][z+1][r]*eps_dz[z][r] + v[old][z][r+1]*eps_dr[z][r]*s1[r] +
-            v[old][z-1][r]*eps_dz[z-1][r];// *fLC;
-          eps_sum = eps_dz[z][r] + eps_dr[z][r]*s1[r] + eps_dz[z-1][r];// *fLC;
-          if (r > 0) {
-            v_sum += v[old][z][r-1]*eps_dr[z][r-1]*s2[r];
-            eps_sum += eps_dr[z][r-1]*s2[r];
-          } else {
-            v_sum += v[old][z][r+1]*eps_dr[z][r]*s1[r];  // reflection symm around r=0
-            eps_sum += eps_dr[z][r]*s1[r];
-          }
-          // check for cases where the PC corner needs modification in both r and z
-          if (z == LC && setup->point_type[z-1][r] == 1) {
-            v_sum += v[old][z][r-1]*eps_dr[z][r-1]*s2[r];// *(frrc[z]-1.0);
-            eps_sum += eps_dr[z][r-1]*s2[r];// *(frrc[z]-1.0);
-          }
-          */
         }
 
         // calculate the interpolated mean potential and the effect of the space charge
-        mean = v_sum / eps_sum;
+        //v[new][z][r] = v_sum / eps_sum + setup->impurity[z][r];
         if (ev_calc ||
             (setup->vacuum_gap > 0 && z == 1))
-          v[new][z][r] = mean + setup->impurity[z][r];
+          v[new][z][r] = v_sum / eps_sum + setup->impurity[z][r];
         else
-          v[new][z][r] = mean;
+          v[new][z][r] = v_sum / eps_sum;
 
         // calculate difference from last iteration, for convergence check
         dif = v[old][z][r] - v[new][z][r];
@@ -913,8 +887,6 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
         if (max_dif < dif) max_dif = dif;
         // do over-relaxation
         v[new][z][r] += OR_fact*save_dif;
-
-        //if (v[new][z][r] < 0) v[new][z][r] = 0;
       }
     }
 
@@ -945,31 +917,28 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
 
 /* -------------------------------------- ev_relax_undep ------------------- */
 int ev_relax_undep(MJD_Siggen_Setup *setup) {
-  int    old = 1, new = 0, iter, r, z;
+  int    old = 1, new = 0, iter, r, z, bvn;
   float  grid = setup->xtal_grid;
   int    L  = lrint(setup->xtal_length/grid)+1;
   int    R  = lrint(setup->xtal_radius/grid)+1;
-  double eps_sum, v_sum, mean, save_dif, min;
-  double dif, sum_dif, max_dif, bubble_volts, bv2, bv3;
+  double eps_sum, v_sum, save_dif, min;
+  double dif, sum_dif, max_dif, bubble_volts;
   double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
   double *s1 = setup->s1, *s2 = setup->s2;
   char   **undep = setup->undepleted;
   double e_over_E = 11.310; // e/epsilon; for 1 mm2, charge units 1e10 e/cm3, espilon = 16*epsilon0
 
 
-  if (setup->vacuum_gap > 0) {   // save impurity value along passivated surface
-    for (r = 1; r < R; r++)
-      setup->impurity[0][r] = setup->impurity[1][r];
-  }
+  // save impurity value along passivated surface
+  for (r = 1; r < R; r++)
+    setup->impurity[0][r] = setup->impurity[1][r];
 
-#ifndef BUBBLE1
   /* initialise the undepleted array for use with bubble depletion */
   for (z = 1; z < L; z++) {
     for (r = 1; r < R; r++) {
       if (setup->point_type[z][r] >= INSIDE) undep[r][z] = 0;
     }
   }
-#endif
 
   for (iter = 0; iter < setup->max_iterations; iter++) {
 
@@ -983,13 +952,11 @@ int ev_relax_undep(MJD_Siggen_Setup *setup) {
     sum_dif = 0;
     max_dif = 0;
     bubble_volts = 0;
-    //if (bv3 > 0) bubble_volts = bv2/bv3 + 0.01;
-    bv2 = 0;
-    bv3 = 0;
+    bvn = 0;
 
     if (setup->vacuum_gap > 0) {   // modify impurity value along passivated surface
       for (r = 1; r < R; r++)      //   due to surface charge induced by capacitance
-        setup->impurity[1][r] = setup->impurity[0][r] +
+        setup->impurity[1][r] = setup->impurity[0][r] -
           v[old][1][r] * 5.52e-4 * e_over_E * grid / setup->vacuum_gap;
     }
 
@@ -1018,34 +985,18 @@ int ev_relax_undep(MJD_Siggen_Setup *setup) {
         // calculate the interpolated mean potential and the effect of the space charge
         min = fminf(fminf(v[old][z+1][r], v[old][z][r+1]),
                     fminf(v[old][z-1][r], v[old][z][r-1]));
-        mean = v_sum / eps_sum;
-        v[new][z][r] = mean + setup->impurity[z][r];
+        v[new][z][r] = v_sum / eps_sum + setup->impurity[z][r];
 
-#ifndef BUBBLE1
         undep[r][z] /= 2;
         if (v[new][z][r] <= 0) {
           v[new][z][r] = 0;
           undep[r][z] = 4;  // do not do over-relaxation for 3 iterations
         } else if (v[new][z][r] <= min) {
-          if (bubble_volts == 0) bubble_volts = min + 0.01;
+          if (bubble_volts == 0) bubble_volts = min + 0.2*grid*grid; // finer grids require smaller increment here
           v[new][z][r] = bubble_volts;
-          bv2 += min;
-          bv3 += 1.0;
+          bvn++;
           undep[r][z] = 8;  // do not do over-relaxation for 4 iterations
         }
-#else
-	undep[r][z] = '.';
-        if (v[new][z][r] <= 0) {
-          v[new][z][r] = 0;
-          undep[r][z] = '*';
-          save_dif = 0;  // do not do over-relaxation
-        } else if (v[new][z][r] < min) {
-          if (bubble_volts == 0) bubble_volts = min + 0.01;
-          v[new][z][r] = bubble_volts;
-          undep[r][z] = '*';
-          save_dif = 0;  // do not do over-relaxation
-        }
-#endif
 
         // calculate difference from last iteration, for convergence check
         dif = v[old][z][r] - v[new][z][r];
@@ -1053,10 +1004,7 @@ int ev_relax_undep(MJD_Siggen_Setup *setup) {
         sum_dif += dif;
         if (max_dif < dif) max_dif = dif;
         // do over-relaxation
-#ifndef BUBBLE1
-        if (!undep[r][z])
-#endif
-        v[new][z][r] += OR_fact*save_dif;
+        if (!undep[r][z])  v[new][z][r] += OR_fact*save_dif;
       }
     }
 
@@ -1065,9 +1013,9 @@ int ev_relax_undep(MJD_Siggen_Setup *setup) {
       if (0) {
         printf("%5d %d %d %.10f %.10f\n", iter, old, new, max_dif, sum_dif/(L-2)/(R-2));
       } else {
-        printf("%5d %d %d %.10f %.10f ; %.10f %.10f bubble %.2f %.0f\n",
+        printf("%5d %d %d %.10f %.10f ; %.10f %.10f bubble %.2f %d\n",
                iter, old, new, max_dif, sum_dif/(L-2)/(R-2),
-               v[new][L/2][R/2], v[new][L/3][R/3], bubble_volts, bv3);
+               v[new][L/2][R/2], v[new][L/3][R/3], bubble_volts, bvn);
       }
     }
     // check for convergence
@@ -1080,7 +1028,6 @@ int ev_relax_undep(MJD_Siggen_Setup *setup) {
   setup->fully_depleted = 1;
   for (r=1; r<R; r++) {
     for (z=1; z<L; z++) {
-#ifndef BUBBLE1
       if (setup->point_type[z][r] < INSIDE) {
         undep[r][z] = ' ';
       } else if (undep[r][z] == 0) {
@@ -1090,12 +1037,6 @@ int ev_relax_undep(MJD_Siggen_Setup *setup) {
         else undep[r][z] = '*';
         setup->fully_depleted = 0;
       }
-#else
-     if (undep[r][z] == '*') {
-        setup->fully_depleted = 0;
-        if (v[new][z][r] > 0.001) undep[r][z] = 'B';  // identifies pinch-off
-      }
-#endif
     }
   }
 
@@ -1114,17 +1055,12 @@ int wp_relax_undep(MJD_Siggen_Setup *setup) {
   float  grid = setup->xtal_grid;
   int    L  = lrint(setup->xtal_length/grid)+1;
   int    R  = lrint(setup->xtal_radius/grid)+1;
-  double eps_sum, v_sum, mean, save_dif, pinched_sum1, pinched_sum2;
+  double eps_sum, v_sum, save_dif, pinched_sum1, pinched_sum2;
   double dif, sum_dif, max_dif;
   double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
   double *s1 = setup->s1, *s2 = setup->s2;
   double e_over_E = 11.310; // e/epsilon; for 1 mm2, charge units 1e10 e/cm3, espilon = 16*epsilon0
 
-
-  if (setup->vacuum_gap > 0) {   // save impurity value along passivated surface
-    for (r = 1; r < R; r++)
-      setup->impurity[0][r] = setup->impurity[1][r];
-  }
 
   for (iter = 0; iter < setup->max_iterations; iter++) {
 
@@ -1141,7 +1077,7 @@ int wp_relax_undep(MJD_Siggen_Setup *setup) {
 
     if (setup->vacuum_gap > 0) {   // modify impurity value along passivated surface
       for (r = 1; r < R; r++)      //   due to surface charge induced by capacitance
-        setup->impurity[1][r] = v[old][1][r] * 5.52e-4 * e_over_E * grid / setup->vacuum_gap;
+        setup->impurity[1][r] = -v[old][1][r] * 5.52e-4 * e_over_E * grid / setup->vacuum_gap;
     }
 
     /* start from z=1 and r=1 so that (z,r)=0 can be
@@ -1187,11 +1123,10 @@ int wp_relax_undep(MJD_Siggen_Setup *setup) {
 
         if (setup->point_type[z][r] != PINCHOFF) {
           // calculate the interpolated mean potential and the effect of the space charge
-          mean = v_sum / eps_sum;
           if (setup->vacuum_gap > 0 && z == 1)
-            v[new][z][r] = mean + setup->impurity[z][r];
+            v[new][z][r] = v_sum / eps_sum + setup->impurity[z][r];
           else
-            v[new][z][r] = mean;
+            v[new][z][r] = v_sum / eps_sum;
 
           // calculate difference from last iteration, for convergence check
           dif = v[old][z][r] - v[new][z][r];
@@ -1204,11 +1139,10 @@ int wp_relax_undep(MJD_Siggen_Setup *setup) {
       }
     }
     if (pinched_sum2 > 0.1) {
-      mean = pinched_sum1 / pinched_sum2;
       for (z=1; z<L; z++) {
         for (r=1; r<R; r++) {
           if (setup->point_type[z][r] == PINCHOFF) {
-            v[new][z][r] = mean;
+            v[new][z][r] = pinched_sum1 / pinched_sum2;
             dif = v[old][z][r] - v[new][z][r];
             if (dif < 0) dif = -dif;
             sum_dif += dif;
@@ -1230,10 +1164,6 @@ int wp_relax_undep(MJD_Siggen_Setup *setup) {
   }
 
   printf(">> %d %.16f\n\n", iter, sum_dif);
-  if (setup->vacuum_gap > 0) {   // restore impurity value along passivated surface
-    for (r = 1; r < R; r++)
-      setup->impurity[1][r] = setup->impurity[0][r];
-  }
 
   return 0;
 } /* wp_relax_undep */
