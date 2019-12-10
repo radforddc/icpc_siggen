@@ -803,8 +803,8 @@ int grid_init(MJD_Siggen_Setup *setup) {
 int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
   int    old = 1, new = 0, iter, r, z;
   float  grid = setup->xtal_grid;
-  int    L  = lrint(setup->xtal_length/grid)+1;
-  int    R  = lrint(setup->xtal_radius/grid)+1;
+  int    L  = lrint(setup->xtal_length/grid)+2;
+  int    R  = lrint(setup->xtal_radius/grid)+2;
   double eps_sum, v_sum, save_dif;
   double dif, sum_dif, max_dif;
   double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
@@ -919,8 +919,8 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
 int ev_relax_undep(MJD_Siggen_Setup *setup) {
   int    old = 1, new = 0, iter, r, z, bvn;
   float  grid = setup->xtal_grid;
-  int    L  = lrint(setup->xtal_length/grid)+1;
-  int    R  = lrint(setup->xtal_radius/grid)+1;
+  int    L  = lrint(setup->xtal_length/grid)+2;
+  int    R  = lrint(setup->xtal_radius/grid)+2;
   double eps_sum, v_sum, save_dif, min;
   double dif, sum_dif, max_dif, bubble_volts;
   double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
@@ -1053,8 +1053,8 @@ int ev_relax_undep(MJD_Siggen_Setup *setup) {
 int wp_relax_undep(MJD_Siggen_Setup *setup) {
   int    old = 1, new = 0, iter, r, z;
   float  grid = setup->xtal_grid;
-  int    L  = lrint(setup->xtal_length/grid)+1;
-  int    R  = lrint(setup->xtal_radius/grid)+1;
+  int    L  = lrint(setup->xtal_length/grid)+2;
+  int    R  = lrint(setup->xtal_radius/grid)+2;
   double eps_sum, v_sum, save_dif, pinched_sum1, pinched_sum2;
   double dif, sum_dif, max_dif;
   double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
