@@ -15,19 +15,18 @@
       - added dead layer / Li thickness
       - added over-relaxation factor; gained factor of ~ 40 speedup, depending on size/grid
       - added code to estimate full-depletion voltage in the case of bubble depletion (pinch-off)
+      - added -r option to allow reading of z-impurity profile from a .spe file
 
    Nov 2019
       - major rewrite and re-arragement of the code
       - broke out functions grid_init, ev_calc, wp_calc, write_ev, write_wp, do_relax, interpolate
       - got an additional factor of ~3 speedup
       - more modular and readable
-      - todo now: 
-          - add back in interpolation of point contact
-          - execute WD=1 option
+   Dec 2019
+      - added code to properly handle pixels next to p+ and n+ contacts
+        - much better calculation of V and E near contacts
 
-   TO DO:
-      - on coarse grids, interpolate the position of L, R, LT, and the ditch
-            (as is done now already for RC and LC)
+      - todo now:  execute WD=1 option
 */
 
 #include <stdio.h>
@@ -279,7 +278,7 @@ int main(int argc, char **argv)
     } else {
       printf("Estimated depletion voltage = %.0f V\n", BV - min);
     }
-    printf("Minimum bulk field = %.1f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
+    printf("Minimum bulk field = %.2f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
            setup.Emin, setup.rmin, setup.zmin);
   }
  
@@ -408,8 +407,10 @@ int report_config(FILE *fp_out, char *config_file_name) {
 int write_ev(MJD_Siggen_Setup *setup) {
   int    i, j, new=1;
   float  grid = setup->xtal_grid;
-  int    L  = lrint(setup->xtal_length/grid) + 2;
-  int    R  = lrint(setup->xtal_radius/grid) + 2;
+  int    L  = setup->xtal_length/grid + 2.99;
+  int    R  = setup->xtal_radius/grid + 2.99;
+  //int    L  = lrint(setup->xtal_length/grid)+2;
+  //int    R  = lrint(setup->xtal_radius/grid)+2;
   float  r, z;
   float  E_r, E_z, E;
   FILE   *file;
@@ -451,17 +452,35 @@ int write_ev(MJD_Siggen_Setup *setup) {
     for (i = 1; i < L; i++) {
       z = (i-1) * grid;
       // calc E in r-direction
-      if (j == 1) {
+      if (j == 1) {  // r = 0; symmetry implies E_r = 0
         E_r = 0;
-      } else if (j == R) {
+      } else if (setup->point_type[i][j] == CONTACT_EDGE) {
+        E_r = ((v[new][i][j] - v[new][i][j+1])*setup->dr[1][i][j] +
+               (v[new][i][j-1] - v[new][i][j])*setup->dr[0][i][j]) / (0.2*grid);
+      } else if (setup->point_type[i][j] < INSIDE &&
+                 setup->point_type[i][j-1] == CONTACT_EDGE) {
+        E_r =  (v[new][i][j-1] - v[new][i][j]) * setup->dr[1][i][j-1] / ( 0.1*grid) ;
+      } else if (setup->point_type[i][j] < INSIDE &&
+                 setup->point_type[i][j+1] == CONTACT_EDGE) {
+        E_r =  (v[new][i][j] - v[new][i][j+1]) * setup->dr[0][i][j+1] / ( 0.1*grid) ;
+      } else if (j == R-1) {
         E_r = (v[new][i][j-1] - v[new][i][j])/(0.1*grid);
       } else {
         E_r = (v[new][i][j-1] - v[new][i][j+1])/(0.2*grid);
       }
       // calc E in z-direction
-      if (i == 1) {
+      if (setup->point_type[i][j] == CONTACT_EDGE) {
+        E_z = ((v[new][i][j] - v[new][i+1][j])*setup->dz[1][i][j] +
+               (v[new][i-1][j] - v[new][i][j])*setup->dz[0][i][j]) / (0.2*grid);
+      } else if (setup->point_type[i][j] < INSIDE &&
+                 setup->point_type[i-1][j] == CONTACT_EDGE) {
+        E_z =  (v[new][i-1][j] - v[new][i][j]) * setup->dz[1][i-1][j] / ( 0.1*grid) ;
+      } else if (setup->point_type[i][j] < INSIDE &&
+                 setup->point_type[i+1][j] == CONTACT_EDGE) {
+        E_z =  (v[new][i][j] - v[new][i+1][j]) * setup->dz[0][i+1][j] / ( 0.1*grid) ;
+      } else if (i == 1) {
         E_z = (v[new][i][j] - v[new][i+1][j])/(0.1*grid);
-      } else if (i == L) {
+      } else if (i == L-1) {
         E_z = (v[new][i-1][j] - v[new][i][j])/(0.1*grid);
       } else {
         E_z = (v[new][i-1][j] - v[new][i+1][j])/(0.2*grid);
@@ -487,7 +506,7 @@ int write_ev(MJD_Siggen_Setup *setup) {
     fprintf(file, "\n");
   }
   fclose(file);
-  printf("\n Minimum bulk field = %.1f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
+  printf("\n Minimum bulk field = %.2f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
          setup->Emin, setup->rmin, setup->zmin);
 
   if (1) { /* write point_type to output file */
@@ -508,8 +527,10 @@ int write_ev(MJD_Siggen_Setup *setup) {
  int write_wp(MJD_Siggen_Setup *setup) {
   int    i, j, new=1;;
   float  grid = setup->xtal_grid;
-  int    L  = lrint(setup->xtal_length/grid) + 2;
-  int    R  = lrint(setup->xtal_radius/grid) + 2;
+  int    L  = setup->xtal_length/grid + 2.99;
+  int    R  = setup->xtal_radius/grid + 2.99;
+  //int    L  = lrint(setup->xtal_length/grid)+2;
+  //int    R  = lrint(setup->xtal_radius/grid)+2;
   float  r, z;
   FILE *file;
 
@@ -560,6 +581,10 @@ int grid_init(MJD_Siggen_Setup *setup) {
       (setup->eps_dz     = malloc(L * sizeof(*setup->eps_dz)))     == NULL ||
       (setup->v[0]       = malloc(L * sizeof(*setup->v[0])))       == NULL ||
       (setup->v[1]       = malloc(L * sizeof(*setup->v[1])))       == NULL ||
+      (setup->dr[0]      = malloc(L * sizeof(*setup->dr[0])))      == NULL ||
+      (setup->dr[1]      = malloc(L * sizeof(*setup->dr[1])))      == NULL ||
+      (setup->dz[0]      = malloc(L * sizeof(*setup->dz[0])))      == NULL ||
+      (setup->dz[1]      = malloc(L * sizeof(*setup->dz[1])))      == NULL ||
       (setup->undepleted = malloc(R * sizeof(*setup->undepleted))) == NULL ||
       (setup->s1         = malloc(R * sizeof(*setup->s1)))         == NULL ||
       (setup->s2         = malloc(R * sizeof(*setup->s2)))         == NULL ||
@@ -573,6 +598,10 @@ int grid_init(MJD_Siggen_Setup *setup) {
     if ((setup->impurity[i]   = malloc(R * sizeof(**setup->impurity)))   == NULL ||
         (setup->v[0][i]       = malloc(R * sizeof(**setup->v[0])))       == NULL ||
 	(setup->v[1][i]       = malloc(R * sizeof(**setup->v[1])))       == NULL ||
+        (setup->dr[0][i]      = malloc(R * sizeof(**setup->dr[0])))      == NULL ||
+	(setup->dr[1][i]      = malloc(R * sizeof(**setup->dr[1])))      == NULL ||
+        (setup->dz[0][i]      = malloc(R * sizeof(**setup->dz[0])))      == NULL ||
+	(setup->dz[1][i]      = malloc(R * sizeof(**setup->dz[1])))      == NULL ||
 	(setup->vsave[i]      = malloc(R * sizeof(**setup->vsave)))      == NULL ||
 	(setup->point_type[i] = malloc(R * sizeof(**setup->point_type))) == NULL) {
       printf("malloc failed\n");
@@ -596,7 +625,7 @@ int grid_init(MJD_Siggen_Setup *setup) {
     }
     memset(setup->undepleted[j], ' ', L);
   }
-        
+
   /* set up reflection symmetry around r=0 or z=0 */
   setup->impurity[0]   = malloc(R * sizeof(**setup->impurity));
   setup->v[0][0]   = setup->v[0][2];
@@ -625,11 +654,20 @@ int grid_init(MJD_Siggen_Setup *setup) {
   }
   setup->s2[1] = setup->s1[1]; // special case for reflection symm at r=0
 
-  /* set up point types for boundary conditions etc */
+  for (i = 1; i < L; i++) {
+    for (j = 0; j < R; j++) {
+      setup->dr[0][i][j] = setup->s2[j];   //  for r-1
+      setup->dr[1][i][j] = setup->s1[j];   //  for r+1
+      setup->dz[0][i][j] = 1;       //  for z-1
+      setup->dz[1][i][j] = 1;       //  for z+1
+    }
+  }
+
+  /* set up pixel point types for boundary conditions etc */
   float lith  = setup->Li_thickness;
   float zmax  = setup->xtal_length - lith;
   float rmax  = setup->xtal_radius - lith;
-  float r1, z1, br, a, b;
+  float r1, z1, br, a, b, c, d, e, g = 0.05 * grid;
 
   for (i = 1; i < L; i++) {
     z = (i-1) * grid;
@@ -640,81 +678,172 @@ int grid_init(MJD_Siggen_Setup *setup) {
 
       setup->point_type[i][j] = INSIDE;
 
-      // outside (HV) contact:
-      br = setup->hole_bullet_radius + 0.8*lith;
+      /* first check outside (HV) contact */
+      br = setup->hole_bullet_radius + lith; // * 0.8
       a = setup->hole_radius + lith - br;
       b = zmax - setup->hole_length + br;
-      if (z >= zmax || r >= rmax ||
-          (r >= setup->wrap_around_radius && z <= lith) ||      // wrap-around  // COULD BE r >
-          /* check 45-degree bottom outer taper of crystal */
-          (z  <= setup->bottom_taper_length + 0.71*lith &&
-           r1 <= setup->bottom_taper_length + 0.71*lith - z) ||
-          /* check hole */
-          (r  <= setup->hole_radius + lith &&
-           z1 <= setup->hole_length &&  // note no lith added here, since it was subtracted from zmax
-            /* check hole bulletization */
-            (r <= a || z >= b || SQ(b-z) + SQ(a-r) <= SQ(br))) ||
-          /* check inner taper of hole */
-          (z1 <= setup->inner_taper_length &&
-           r  <= setup->hole_radius + lith +
-                  ((setup->inner_taper_length - z1) *
-                   setup->inner_taper_width / setup->inner_taper_length)) ||
-          /* check outer top taper of crystal */
-          (z1 <= setup->outer_taper_length &&
-           r1 <= ((setup->outer_taper_length - z1) *
-                   setup->outer_taper_width / setup->outer_taper_length)) ||
-          /* check 45-degree bottom outer taper of crystal */
-          (z  <= setup->bottom_taper_length + 0.71*lith &&
-           r1 <= setup->bottom_taper_length + 0.71*lith - z))
-        setup->point_type[i][j] = HVC;
+      c = setup->hole_radius + lith;
+      if (setup->inner_taper_length > g)
+        c += ((setup->inner_taper_length - z1) *
+              setup->inner_taper_width / setup->inner_taper_length);
+      d = 0;
+      if (setup->outer_taper_length > g)
+        d = ((setup->outer_taper_length - z1) *
+             setup->outer_taper_width / setup->outer_taper_length);
 
-      /* check top and bottom bulletizations */
-      br = setup->top_bullet_radius - lith * 0.7;
-      if (z1 <= br &&r1 <= br &&
-          SQ(br - r1) + SQ(br - z1) >= br*br)
+      if (z+g >= zmax || r+g >= rmax ||
+          (r >= setup->wrap_around_radius && z-g <= lith) ||      // wrap-around   COULD BE r >
+          /* check hole */
+          (r-g  <= setup->hole_radius + lith &&
+           z1-g <= setup->hole_length &&  // note no lith added here, since it was subtracted from zmax
+           /* check hole bulletization */
+           (r-g <= a || z+g >= b || SQ(b-z) + SQ(a-r) <= SQ(br+g))) ||
+          /* check inner taper of hole and outer top taper of crystal */
+          (z1 <= setup->inner_taper_length && r -g <= c) ||
+          (z1 <= setup->outer_taper_length && r1-g <= d) ||
+          /* check 45-degree bottom outer taper of crystal */
+          (z-g  <= setup->bottom_taper_length + 0.71*lith &&
+           r1-g <= setup->bottom_taper_length + 0.71*lith - z)) {
         setup->point_type[i][j] = HVC;
-      br = setup->bottom_bullet_radius - lith * 0.7;
-      if (z <= br + lith && r1 <= br &&
-          SQ(br - r1) + SQ(br - z + lith) >= br*br)
+      }
+      /* check top and bottom bulletizations */
+      br = setup->top_bullet_radius; // - lith;
+      // adjust top bulletiztion position for top outer taper
+      e  = 0;
+      if (setup->outer_taper_length > br)
+        e = ((setup->outer_taper_length - br) *
+             setup->outer_taper_width / setup->outer_taper_length);
+      if (br > g && z1-g <= br && r1 - g <= br + e &&
+          SQ(br + e - r1 + g) + SQ(br - z1 + g) >= br*br)
+        setup->point_type[i][j] = HVC;
+      br = setup->bottom_bullet_radius; // - lith;
+      if (br > g && z-g <= br + lith && r1-g <= br &&
+          SQ(br - r1 + g) + SQ(br - z + lith + g) >= br*br)
         setup->point_type[i][j] = HVC;
 
       if (setup->point_type[i][j] != INSIDE) continue;
 
+      // pixels next to HV contact
+      if (z+grid >= zmax ||
+                 r+grid >= rmax ||
+                 (r >= setup->wrap_around_radius && z-grid <= lith) ||      // wrap-around   COULD BE r >
+                 /* outer top taper of crystal */
+                 (z1 <= setup->outer_taper_length && r1-grid <= d) ||
+                 /* 45-degree bottom outer taper of crystal */
+                 (z-grid  <= setup->bottom_taper_length + 0.71*lith &&
+                  r1-grid <= setup->bottom_taper_length + 0.71*lith - z)) {
+        setup->point_type[i][j] = CONTACT_EDGE;
+        if      (z-g+grid >= zmax) setup->dz[1][i][j] = grid / (zmax - z);
+        else if (r-g+grid >= rmax) setup->dr[1][i][j] = grid / (rmax - r);
+        else if (r >= setup->wrap_around_radius && z+g-grid <= lith)
+          setup->dz[0][i][j] = grid / (z - lith);
+        // top outer taper
+        else if (z1 <= setup->outer_taper_length && r1-grid <= d)
+          setup->dr[1][i][j] = grid / (d - r1);
+        // bottom taper
+        else if (z-grid  <= setup->bottom_taper_length + 0.71*lith &&
+                   r1-grid <= setup->bottom_taper_length + 0.71*lith - z) {
+          setup->dr[1][i][j] = grid / (r1 - (setup->bottom_taper_length + 0.71*lith - z));
+          setup->dz[0][i][j] = grid / (z  - (setup->bottom_taper_length + 0.71*lith - r1));
+        }
+      }
+      /* next to hole */
+      if (setup->hole_radius > g && setup->hole_length > g && // the hole is indeed defined
+          ((r-grid <= setup->hole_radius + lith &&
+            z1-grid <= setup->hole_length &&  // note no lith added here, since it was subtracted from zmax
+            /* hole bulletization */
+            (r-g <= a || z+g >= b || SQ(b-z) + SQ(r-a) <= SQ(br + grid))) ||
+           /* inner taper of hole  */
+           (z1 <= setup->inner_taper_length && r-grid <= c))) {
+        setup->point_type[i][j] = CONTACT_EDGE;
+        if (r - grid <= setup->hole_radius + lith && z >= b)      // radial wall of hole
+          setup->dr[0][i][j] = grid / (r - setup->hole_radius - lith);
+        else if (r <= a && z1 - grid <= setup->hole_length)       // bottom of hole
+          setup->dz[1][i][j] = grid / (z1 - setup->hole_length);
+        else if (z1 <= setup->inner_taper_length && r-grid <= c)  // inner taper
+          setup->dr[0][i][j] = grid / (c - r);
+        else if (SQ(b-z) + SQ(r-a) <= SQ(br - g + grid)) {        // bulletized bottom
+          c = b - sqrt(br*br - SQ(r-a));
+          if (z + grid >= c) setup->dz[1][i][j] = grid / (c - z);
+          c = a + sqrt(br*br - SQ(b-z));
+          if (r - grid <= c)  setup->dr[0][i][j] = grid / (r - c);
+        }
+      }
+      if (setup->point_type[i][j] != INSIDE) continue;
+
+      /* pixels next to top and bottom bulletizations */
+      br = setup->top_bullet_radius; // - lith;
+      if (br > grid && z1-grid <= br && r1-grid <= br + e &&
+               SQ(br - r1 + e + grid) + SQ(br - z1 + grid) >= br*br) {
+        setup->point_type[i][j] = CONTACT_EDGE;
+        a = sqrt(br*br - SQ(br + e - r1));
+        if (br - z1 + grid >= a) {
+          setup->dz[1][i][j] = grid / (a - br + z1);
+        }
+        a = sqrt(br*br - SQ(br - z1));
+        if (br + e - r1 + grid >= a) {
+          setup->dr[1][i][j] = grid / (a - br - e + r1);
+        }
+      }
+      br = setup->bottom_bullet_radius; // - lith;
+      if (br > g && z <= br + lith && r1 <= br &&
+               SQ(br - r1 + grid ) + SQ(br - z + lith + grid) >= br*br) {
+        setup->point_type[i][j] = CONTACT_EDGE;
+        a = sqrt(br*br - SQ(br - r1));
+        if (br + lith - z + grid >= a) {
+          setup->dz[0][i][j] = grid / (a - br - lith + z);
+        }
+        a = sqrt(br*br - SQ(br + lith - z));
+        if (br - r1 + grid >= a) {
+          setup->dr[1][i][j] = grid / (a - br + r1);
+        }
+      }
+      if (setup->point_type[i][j] != INSIDE) continue;
+
       /* check for inside (point) contact, with optional bulletization */
-      if (z <= setup->pc_length && r <= setup->pc_radius) {
+      if (z-g <= setup->pc_length && r-g <= setup->pc_radius) {
         if (setup->bulletize_PC) {
           br = setup->pc_radius;
           // if length <= radius, use length as bulletization radius
           if (setup->pc_length <= setup->pc_radius) br = setup->pc_length;
           a = setup->pc_radius - br;
           b = setup->pc_length - br;
-          if (r < a || z < b || SQ(b-z) + SQ(a-r) <= SQ(br)) setup->point_type[i][j] = PC;
-        }
-        else {
+          if (r < a || z < b || SQ(z-b) + SQ(r-a) <= SQ(br+g)) setup->point_type[i][j] = PC;
+        } else {
           setup->point_type[i][j] = PC;
         }
       }
-      /* ---------------------------------------------- 
-         edges of inside contact; if the PC radius and/or length is not in the middle
-           of a pixel, we want to modify interpolation of V in surrounding pixels...
-           in this case, the radius/length > grid point, so it modifies the
-           interpolation for the next point out
-           // FIXME: Check for adjacent ditch *//*
-        if (r == rrc[z] && drrc[z] < -0.05) {
-          bulk[z][r] = 1;  // flag for radial edge of PC
-          frrc[z] = -1.0/drrc[z];  // interpolation weight for pixel at (r-1)
-          // only part of the pixel has volume charge density, the rest is contact
-          vfraction[z][r] *= -2.0*drrc[z];
+      if (setup->point_type[i][j] != INSIDE) continue;
+      // pixels next to point contact
+      if (z-grid <= setup->pc_length && r-grid <= setup->pc_radius) {
+        br = 0;
+        if (setup->bulletize_PC) {
+          br = setup->pc_radius;
+          // if length <= radius, use length as bulletization radius
+          if (setup->pc_length <= setup->pc_radius) br = setup->pc_length;
         }
-        // z edge of inside contact; if the PC length is not in the middle
-        //   of a pixel, we want to modify interpolation of V in surrounding pixels
-        if (z == LC && dLC < -0.05) {
-          bulk[z][r] = 2;  // flag for z edge of PC
-          fLC = -1.0/dLC;  // interpolation weight for pixel at (z-1)
-          // only part of the pixel has volume charge density, the rest is contact
-          vfraction[z][r] *= -2.0*dLC;
+        a = setup->pc_radius - br;
+        b = setup->pc_length - br;
+        if (z <= b) {
+          setup->point_type[i][j] = CONTACT_EDGE;
+          setup->dr[0][i][j] = grid / (r - setup->pc_radius);
         }
-        ---------------------------------------------- */
+        if (r <= a) {
+          setup->point_type[i][j] = CONTACT_EDGE;
+          setup->dz[0][i][j] = grid / (z  - setup->pc_length);
+        }
+        if (br > g && SQ(z-b) + SQ(r-a) <= SQ(br+grid)) {
+          setup->point_type[i][j] = CONTACT_EDGE;
+          c = b + sqrt(br*br - SQ(r-a));
+          if (z - grid <= c) {
+            setup->dz[1][i][j] = grid / (z - c);
+          }
+          c = a + sqrt(br*br - SQ(z-b));
+          if (r - grid <= c) {
+            setup->dr[0][i][j] = grid / (r - c);
+          }
+        }
+      }
 
       /* check for inside ditch
          boundary condition at Ge-vacuum interface:
@@ -731,7 +860,7 @@ int grid_init(MJD_Siggen_Setup *setup) {
   }
 
   /* for pixels adjacent to the ditch, set point_type to DITCH_EDGE
-     andfor z=0, set flag for passivated surface */
+     and for z=0, set flag for passivated surface */
   for (i = 1; i < L; i++) {
     for (j = 1; j < R; j++) {
       setup->eps_dr[i][j-1] = (setup->eps[i][j-1] + setup->eps[i][j]) / 2.0f;
@@ -783,13 +912,36 @@ int grid_init(MJD_Siggen_Setup *setup) {
     for (i = 1; i < L; i++)  setup->impurity[i][j] = imp_z[i] * imp_rm + imp_ra;
     if (setup->point_type[1][j] == PASSIVE) {
       setup->impurity[1][j] += setup->impurity_surface * e_over_E * grid;
-      // special hack for Ponama 1 in GALATEA?
-      // if (r < 8) setup->impurity[1][j] -= 2.0 * e_over_E * grid;
-      // setup->impurity[1][j] -= 0.3 * 13.0/r * e_over_E * grid;
-      // setup->impurity[1][j] -= 0.3 * (1.0 - r/15.0) * e_over_E * grid;
+    }
+    /* reduce charge volume for CONTACT_EDGE pixels */
+    for (i = 1; i < L; i++) {
+      if (setup->point_type[i][j] == CONTACT_EDGE) {
+        if (setup->dr[0][i][j] < 1) setup->dr[0][i][j] = 1;
+        if (setup->dr[1][i][j] < 1) setup->dr[1][i][j] = 1;
+        if (setup->dz[0][i][j] < 1) setup->dz[0][i][j] = 1;
+        if (setup->dz[1][i][j] < 1) setup->dz[1][i][j] = 1;
+        if (setup->dr[0][i][j] > 20) setup->dr[0][i][j] = 20;
+        if (setup->dr[1][i][j] > 20) setup->dr[1][i][j] = 20;
+        if (setup->dz[0][i][j] > 20) setup->dz[0][i][j] = 20;
+        if (setup->dz[1][i][j] > 20) setup->dz[1][i][j] = 20;
+        setup->impurity[i][j] /=
+          SQ(setup->dz[1][i][j]*setup->dz[0][i][j] * setup->dr[1][i][j]*setup->dr[0][i][j]);
+      }
     }
   }
 
+  /* clean up any missed edges of the contact surfaces */
+  for (i = 2; i < L-1; i++) {
+    for (j = 1; j < R-1; j++) {
+      if (setup->point_type[i][j] == INSIDE &&
+          (setup->point_type[i+1][j] < INSIDE ||
+           setup->point_type[i-1][j] < INSIDE ||
+           setup->point_type[i][j+1] < INSIDE ||
+           (j > 1 && setup->point_type[i][j-1] < INSIDE)))
+        setup->point_type[i][j] = CONTACT_EDGE;
+    }
+  }
+           
   /* free local and no-longer-needed arrays */
   free(imp_z);
   for (i = 1; i < L; i++) free(setup->eps[i]);
@@ -808,6 +960,7 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
   double eps_sum, v_sum, save_dif;
   double dif, sum_dif, max_dif;
   double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
+  double ***dr = setup->dr, ***dz = setup->dz;
   double *s1 = setup->s1, *s2 = setup->s2;
   double e_over_E = 11.310; // e/epsilon; for 1 mm2, charge units 1e10 e/cm3, espilon = 16*epsilon0
 
@@ -861,10 +1014,12 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
         if (setup->point_type[z][r] < DITCH) {       // normal bulk or passivated surface, no complications
           v_sum = (v[old][z+1][r] + v[old][z][r+1]*s1[r] +
                    v[old][z-1][r] + v[old][z][r-1]*s2[r]);
-          if (r > 1)
-            eps_sum = 4;
-          else
-            eps_sum = 2 + s1[r] + s2[r];
+          if (r > 1) eps_sum = 4;
+          else       eps_sum = 2 + s1[r] + s2[r];
+        } else if (setup->point_type[z][r] == CONTACT_EDGE) {  // adjacent to the contact
+          v_sum = (v[old][z+1][r]*dz[1][z][r] + v[old][z][r+1]*dr[1][z][r] +
+                   v[old][z-1][r]*dz[0][z][r] + v[old][z][r-1]*dr[0][z][r]);
+          eps_sum = dz[1][z][r] + dr[1][z][r] + dz[0][z][r] + dr[0][z][r];
         } else if (setup->point_type[z][r] >= DITCH) {  // in or adjacent to the ditch
           v_sum = (v[old][z+1][r]*eps_dz[z  ][r] + v[old][z][r+1]*eps_dr[z][r  ]*s1[r] +
                    v[old][z-1][r]*eps_dz[z-1][r] + v[old][z][r-1]*eps_dr[z][r-1]*s2[r]);
@@ -873,7 +1028,6 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
         }
 
         // calculate the interpolated mean potential and the effect of the space charge
-        //v[new][z][r] = v_sum / eps_sum + setup->impurity[z][r];
         if (ev_calc ||
             (setup->vacuum_gap > 0 && z == 1))
           v[new][z][r] = v_sum / eps_sum + setup->impurity[z][r];
@@ -924,6 +1078,7 @@ int ev_relax_undep(MJD_Siggen_Setup *setup) {
   double eps_sum, v_sum, save_dif, min;
   double dif, sum_dif, max_dif, bubble_volts;
   double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
+  double ***dr = setup->dr, ***dz = setup->dz;
   double *s1 = setup->s1, *s2 = setup->s2;
   char   **undep = setup->undepleted;
   double e_over_E = 11.310; // e/epsilon; for 1 mm2, charge units 1e10 e/cm3, espilon = 16*epsilon0
@@ -973,8 +1128,12 @@ int ev_relax_undep(MJD_Siggen_Setup *setup) {
         if (setup->point_type[z][r] < DITCH) {       // normal bulk or passivated surface, no complications
           v_sum = (v[old][z+1][r] + v[old][z][r+1]*s1[r] +
                    v[old][z-1][r] + v[old][z][r-1]*s2[r]);
-          eps_sum = 4;
-          if (r == 1) eps_sum = 2 + s1[r] + s2[r];
+          if (r > 1) eps_sum = 4;
+          else       eps_sum = 2 + s1[r] + s2[r];
+        } else if (setup->point_type[z][r] == CONTACT_EDGE) {  // adjacent to the contact
+          v_sum = (v[old][z+1][r]*dz[1][z][r] + v[old][z][r+1]*dr[1][z][r] +
+                   v[old][z-1][r]*dz[0][z][r] + v[old][z][r-1]*dr[0][z][r]);
+          eps_sum = dz[1][z][r] + dr[1][z][r] + dz[0][z][r] + dr[0][z][r];
         } else if (setup->point_type[z][r] >= DITCH) {  // in or adjacent to the ditch
           v_sum = (v[old][z+1][r]*eps_dz[z  ][r] + v[old][z][r+1]*eps_dr[z][r  ]*s1[r] +
                    v[old][z-1][r]*eps_dz[z-1][r] + v[old][z][r-1]*eps_dr[z][r-1]*s2[r]);
@@ -1058,6 +1217,7 @@ int wp_relax_undep(MJD_Siggen_Setup *setup) {
   double eps_sum, v_sum, save_dif, pinched_sum1, pinched_sum2;
   double dif, sum_dif, max_dif;
   double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
+  double ***dr = setup->dr, ***dz = setup->dz;
   double *s1 = setup->s1, *s2 = setup->s2;
   double e_over_E = 11.310; // e/epsilon; for 1 mm2, charge units 1e10 e/cm3, espilon = 16*epsilon0
 
@@ -1093,8 +1253,8 @@ int wp_relax_undep(MJD_Siggen_Setup *setup) {
         if (setup->point_type[z][r] < PINCHOFF) {       // normal bulk or passivated surface, no complications
           v_sum = (v[old][z+1][r] + v[old][z][r+1]*s1[r] +
                    v[old][z-1][r] + v[old][z][r-1]*s2[r]);
-          eps_sum = 4;
-          if (r == 1) eps_sum = 2 + s1[r] + s2[r];
+          if (r > 1) eps_sum = 4;
+          else       eps_sum = 2 + s1[r] + s2[r];
         } else if (setup->point_type[z][r] == PINCHOFF) {  // in or adjacent to the ditch
           if (setup->point_type[z+1][r] < PINCHOFF) {
             pinched_sum1 += v[old][z+1][r]*eps_dz[z][r];
@@ -1114,6 +1274,10 @@ int wp_relax_undep(MJD_Siggen_Setup *setup) {
           }
           v_sum = pinched_sum1;
           eps_sum = pinched_sum2;
+        } else if (setup->point_type[z][r] == CONTACT_EDGE) {  // adjacent to the contact
+          v_sum = (v[old][z+1][r]*dz[1][z][r] + v[old][z][r+1]*dr[1][z][r] +
+                   v[old][z-1][r]*dz[0][z][r] + v[old][z][r-1]*dr[0][z][r]);
+          eps_sum = dz[1][z][r] + dr[1][z][r] + dz[0][z][r] + dr[0][z][r];
         } else if (setup->point_type[z][r] >= DITCH) {  // in or adjacent to the ditch
           v_sum = (v[old][z+1][r]*eps_dz[z  ][r] + v[old][z][r+1]*eps_dr[z][r  ]*s1[r] +
                    v[old][z-1][r]*eps_dz[z-1][r] + v[old][z][r-1]*eps_dr[z][r-1]*s2[r]);

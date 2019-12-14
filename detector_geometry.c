@@ -68,9 +68,14 @@ int outside_detector(point pt, MJD_Siggen_Setup *setup){
 
   /* check bulletizations */
   br = setup->top_bullet_radius;
+  // adjust top bulletiztion position for top outer taper
+  a = 0;
+  if (setup->outer_taper_length > br)
+    a = ((setup->outer_taper_length - br) *
+         setup->outer_taper_width / setup->outer_taper_length);
   if (z1 < br &&
-      r1 < br &&
-      SQ(br - r1) + SQ(br - z1) > br*br) return 1;
+      r1 < br + a &&
+      SQ(br - r1 + a) + SQ(br - z1) > br*br) return 1;
   br = setup->bottom_bullet_radius;
   if ( z > br &&
       r1 < br &&

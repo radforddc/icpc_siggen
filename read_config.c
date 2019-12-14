@@ -295,11 +295,15 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
     setup->wrap_around_radius = setup->xtal_radius - setup->bottom_taper_length;
 
   /* some consistency checks */
+  if (setup->inner_taper_length > setup->hole_length - setup->hole_bullet_radius)
+    setup->inner_taper_length = setup->hole_length - setup->hole_bullet_radius;
   if (setup->hole_bullet_radius > setup->hole_radius)
     setup->hole_bullet_radius = setup->hole_radius;
   if (setup->outer_taper_length > setup->xtal_length ||
       setup->inner_taper_length > setup->hole_length ||
       setup->hole_length > setup->xtal_length ||
+      setup->hole_length < setup->hole_bullet_radius ||
+      setup->inner_taper_length > setup->hole_length - setup->hole_bullet_radius ||
       (setup->hole_radius +
        setup->outer_taper_width +
        setup->inner_taper_width) > setup->xtal_radius) {

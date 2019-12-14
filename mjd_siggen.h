@@ -128,6 +128,7 @@ typedef struct {
   int    fully_depleted;
   float  bubble_volts, Emin;
   float  rho_z_spe[1024];
+  double **dr[2], **dz[2];
 
   //for siggen:
   cyl_pt **efld;
@@ -145,7 +146,7 @@ typedef struct {
 
 } MJD_Siggen_Setup;
 
-enum point_types{PC, HVC, INSIDE, PASSIVE, PINCHOFF, DITCH, DITCH_EDGE};
+enum point_types{PC, HVC, INSIDE, PASSIVE, PINCHOFF, DITCH, DITCH_EDGE, CONTACT_EDGE};
 int read_config(char *config_file_name, MJD_Siggen_Setup *setup);
 
 #endif /*#ifndef _MJD_SIGGEN_H */

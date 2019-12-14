@@ -1,15 +1,3 @@
-
-TO DO:
-
-- measure cpu time and try to optimize 
-    - lots of redundant operations in efield_exists()
-    - if vel << grid size, calculate dq/dt, number of steps?
-    - can we combine calls grid_weights?
-    	  - ipt and w in setup? also rlen, zlen, etc?
-- mjd_fieldgen: add partial voxel-filling for outer contact and ditch?
-
-Done:
-
 8 Dec 2014 - added capacitance calculation following WP calculation
            - added proper handling of undepleted voxels in WP calculation
 	   - can now calculate realistic signals without full depletion
@@ -17,8 +5,29 @@ Done:
                - added field dependence of diffusion coefficient
 	       - added surface charge, quadratic charge profile, radial charge profiles
 	       - added logging of config params to start of field and WP files
+Dec 2016
+      - added hole, inner taper length, outer taper length, taper angle
+Nov  2017: added top bulletization
+May-July 2019
+      - added dead layer / Li thickness
+      - added over-relaxation factor; gained factor of ~ 40 speedup, depending on size/grid
+      - added code to estimate full-depletion voltage in the case of bubble depletion (pinch-off)
+      - added -r option to allow reading of z-impurity profile from a .spe file
+Nov-Dec 2019 - many changes, restructured fieldgen
+      - broke out functions grid_init, ev_calc, wp_calc, write_ev, write_wp, do_relax, interpolate
+      - got an additional factor of ~3 speedup
+      - more modular and readable
+      - added code to properly handle pixels next to p+ and n+ contacts
+        - much better calculation of V and E near contacts
 
-- added li_thickness, bulletization, etc to fieldgen
-- added over-relaxation to fieldgen, significant speed improvement
 
 
+TO DO:
+
+- measure cpu time and try to optimize 
+    - lots of redundant operations in efield_exists()
+    - if vel << grid size, calculate dq/dt, number of steps?
+    - can we combine calls to grid_weights?
+    	  - ipt and w in setup? also rlen, zlen, etc?
+
+- re-implement WD=1 option

@@ -533,7 +533,7 @@ static int setup_efield(MJD_Siggen_Setup *setup){
     i = lrintf((cyl.r - setup->rmin)/setup->rstep);
     j = lrintf((cyl.z - setup->zmin)/setup->zstep);
     if (i < 0 || i >= setup->rlen || j < 0 || j >= setup->zlen) {
-      error("Error in efield line %d, i = %d, j = %d\n", line, i, j);
+      // error("Error in efield line %d, i = %d, j = %d\n", line, i, j);
       continue;
     }
     cyl.phi = 0;
