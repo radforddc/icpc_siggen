@@ -1058,6 +1058,25 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
     if ( ev_calc && max_dif < 0.00000008) break;
     if (!ev_calc && max_dif < 0.0000000001) break;
 
+    /* every 100 iterations, check that detector is really depleted*/
+    if (ev_calc && iter > 190 && iter%100 == 0) {
+      for (z = 1; z < L; z++) {
+        setup->v[old][z][0] = setup->v[old][z][2];
+        for (r = 1; r < R; r++) {
+          if (setup->point_type[z][r] < INSIDE) continue;   // HV or point contact
+          if (v[new][z][r] < 0 ||
+              (v[new][z][r] < v[new][z][r] &&
+               v[new][z][r] < v[new][z][r] &&
+               v[new][z][r] < v[new][z][r] &&
+               v[new][z][r] < v[new][z][r])) {
+            printf("Detector may not be fully depleted. Calling ev_relax_undep()\n");
+            ev_relax_undep(setup);
+            return 0;
+          }
+        }
+      }
+
+    }
   }
 
   printf(">> %d %.16f\n\n", iter, sum_dif);
@@ -1199,7 +1218,6 @@ int ev_relax_undep(MJD_Siggen_Setup *setup) {
     }
   }
 
-  printf("bubble %.1f\n", bubble_volts);
   if (setup->vacuum_gap > 0) {   // restore impurity value along passivated surface
     for (r = 1; r < R; r++)
       setup->impurity[1][r] = setup->impurity[0][r];

@@ -39,6 +39,7 @@ int outside_detector(point pt, MJD_Siggen_Setup *setup){
     }
     return 0;
   }
+
   /* check ditch */
   if (z < setup->ditch_depth  &&
       setup->ditch_thickness > 0 && setup->wrap_around_radius > 0 &&
@@ -53,6 +54,7 @@ int outside_detector(point pt, MJD_Siggen_Setup *setup){
     a = setup->hole_radius - setup->hole_bullet_radius;
     if (r < a || SQ(b-z) + SQ(r-a) < SQ(setup->hole_bullet_radius)) return 1;
   }
+
   /* check inner taper of hole */
   if (z1 < setup->inner_taper_length &&
       r  < setup->hole_radius +
@@ -77,7 +79,7 @@ int outside_detector(point pt, MJD_Siggen_Setup *setup){
       r1 < br + a &&
       SQ(br - r1 + a) + SQ(br - z1) > br*br) return 1;
   br = setup->bottom_bullet_radius;
-  if ( z > br &&
+  if ( z < br &&
       r1 < br &&
       SQ(br - r1) + SQ(br - z ) > br*br) return 1;
 
