@@ -70,7 +70,7 @@ int outside_detector(point pt, MJD_Siggen_Setup *setup){
 
   /* check bulletizations */
   br = setup->top_bullet_radius;
-  // adjust top bulletiztion position for top outer taper
+  // adjust top bulletization position for top outer taper
   a = 0;
   if (setup->outer_taper_length > br)
     a = ((setup->outer_taper_length - br) *
@@ -111,7 +111,7 @@ int outside_detector_cyl(cyl_pt pt, MJD_Siggen_Setup *setup){
     return 0;
   }
   /* check ditch */
-  if (z < setup->ditch_depth  &&
+  if (z <= setup->ditch_depth  &&
       setup->ditch_thickness > 0 && setup->wrap_around_radius > 0 &&
       r < setup->wrap_around_radius &&
       r > setup->wrap_around_radius - setup->ditch_thickness) return 1;
@@ -139,13 +139,19 @@ int outside_detector_cyl(cyl_pt pt, MJD_Siggen_Setup *setup){
 
   /* check bulletizations */
   br = setup->top_bullet_radius;
+  // adjust top bulletization position for top outer taper
+  a = 0;
+  if (setup->outer_taper_length > br)
+    a = ((setup->outer_taper_length - br) *
+         setup->outer_taper_width / setup->outer_taper_length);
   if (z1 < br &&
-      r1 < br &&
-      SQ(br - r1) + SQ(br - z1) > br*br) return 1;
+      r1 < br + a &&
+      SQ(br - r1 + a) + SQ(br - z1) > br*br) return 1;
   br = setup->bottom_bullet_radius;
-  if ( z < br &&
+  a = setup->Li_thickness;   // FIXME ? added for fieldgen
+  if ( z < br + a &&
       r1 < br &&
-      SQ(br - r1) + SQ(br - z ) > br*br) return 1;
+      SQ(br - r1) + SQ(br - z + a) > br*br) return 1;
 
   return 0;
 }

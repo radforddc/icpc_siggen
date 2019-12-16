@@ -24,7 +24,7 @@ Nov-Dec 2019 - many changes, restructured fieldgen
 
 TO DO:
 
-- measure cpu time and try to optimize 
+- siggen: measure cpu time and try to optimize 
     - lots of redundant operations in efield_exists()
     - if vel << grid size, calculate dq/dt, number of steps?
     - can we combine calls to grid_weights?
