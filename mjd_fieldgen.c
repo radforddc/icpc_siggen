@@ -39,7 +39,6 @@
 #include "detector_geometry.h"
 
 #define MAX_ITS 50000     // default max number of iterations for relaxation
-#define MAX_ITS_FACTOR 2  // factor by which max iterations is reduced as grid is refined
 
 static int report_config(FILE *fp_out, char *config_file_name);
 static int grid_init(MJD_Siggen_Setup *setup);
@@ -62,8 +61,6 @@ int main(int argc, char **argv)
   int   WV = 0;  // 0: do not write the V and E values to ppc_ev.dat
                  // 1: write the V and E values to ppc_ev.dat
                  // 2: write the V and E values for both +r, -r (for gnuplot, NOT for siggen)
-  int   WP = 0;  // 0: do not calculate the weighting potential
-                 // 1: calculate the WP and write the values to ppc_wp.dat
   int   WD = 0;  // 0: do not write out depletion surface
                  // 1: write out depletion surface to depl_<HV>.dat
 
@@ -86,18 +83,17 @@ int main(int argc, char **argv)
   if (setup.xtal_grid < 0.001) setup.xtal_grid = 0.5;
   BV = setup.xtal_HV;
   WV = setup.write_field;
-  WP = setup.write_WP;
   setup.rho_z_spe[0] = 0;
 
   for (i=2; i<argc-1; i++) {
     if (strstr(argv[i], "-b")) {
       BV = setup.xtal_HV = atof(argv[++i]);   // bias volts
     } else if (strstr(argv[i], "-w")) {
-      WV = atoi(argv[++i]);   // write-out options
+      WV = atoi(argv[++i]);               // write-out options
     } else if (strstr(argv[i], "-d")) {
-      WD = atoi(argv[++i]);   // write-out options
+      WD = atoi(argv[++i]);               // write-out options
     } else if (strstr(argv[i], "-p")) {
-      WP = atoi(argv[++i]);   // weighting-potential options
+      setup.write_WP = atoi(argv[++i]);   // weighting-potential options
     } else if (strstr(argv[i], "-r")) {
       if (!(fp = fopen(argv[++i], "r"))) {   // impurity-profile-spectrum file name
         printf("\nERROR: cannot open impurity profile spectrum file %s\n\n", argv[i+1]);
@@ -566,7 +562,7 @@ int write_ev(MJD_Siggen_Setup *setup) {
   return 0;
  } /* write_wp */
 
-/* -------------------------------------- grid_init ------------------- */
+/* -------------------------------------- dist_from_contact ------------------- */
 float dist_from_contact(cyl_pt pt, cyl_pt delta, MJD_Siggen_Setup *setup) {
   float  factor = 1, d = 0.5;
   cyl_pt test;
@@ -840,8 +836,7 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
   float  grid = setup->xtal_grid;
   int    L  = lrint(setup->xtal_length/grid)+2;
   int    R  = lrint(setup->xtal_radius/grid)+2;
-  double eps_sum, v_sum, save_dif;
-  double dif, sum_dif, max_dif;
+  double eps_sum, v_sum, dif, sum_dif, max_dif;
   double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
   double ***dr = setup->dr, ***dz = setup->dz;
   double *s1 = setup->s1, *s2 = setup->s2;
@@ -868,10 +863,10 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
          OR_fact increases with increasing volxel count (L*R)
                and with increasing iteration number
          0.997 is maximum asymptote for very large pixel count and iteration number */
-    //double OR_fact = ((0.9975 - 600.0/(L*R)) * (1.0 - 0.9/(double)(1+iter/6)));
-    double OR_fact = ((0.997 - 300.0/(L*R)) * (1.0 - 0.9/(double)(1+iter/6)));
-    if (300.0/(L*R) > 0.5) OR_fact = (0.5 * (1.0 - 0.9/(double)(1+iter/6)));
-    if (iter < 2) OR_fact = 0.0;
+    double OR_fact;
+    if (ev_calc)  OR_fact = (1.991 - 1500.0/(L*R));
+    else          OR_fact = (1.992 - 1500.0/(L*R));
+    if (iter < 1) OR_fact = 1.0;
 
     old = new;
     new = 1 - new;
@@ -888,42 +883,44 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
        used for reflection symmetry around r=0 or z=0 */
     for (z = 1; z < L; z++) {
       /* manage r=0 reflection symmetry */
-      setup->v[old][z][0] = setup->v[old][z][2];
+      setup->v[old][z][0] = setup->v[new][z][0] = setup->v[old][z][2];
 
       for (r = 1; r < R; r++) {
         if (setup->point_type[z][r] < INSIDE) continue;   // HV or point contact
-        save_dif = v[old][z][r] - v[new][z][r];      // step difference from previous iteration
 
         if (setup->point_type[z][r] < DITCH) {       // normal bulk or passivated surface, no complications
           v_sum = (v[old][z+1][r] + v[old][z][r+1]*s1[r] +
-                   v[old][z-1][r] + v[old][z][r-1]*s2[r]);
+                   v[new][z-1][r] + v[new][z][r-1]*s2[r]);
           if (r > 1) eps_sum = 4;
           else       eps_sum = 2 + s1[r] + s2[r];
         } else if (setup->point_type[z][r] == CONTACT_EDGE) {  // adjacent to the contact
           v_sum = (v[old][z+1][r]*dz[1][z][r] + v[old][z][r+1]*dr[1][z][r] +
-                   v[old][z-1][r]*dz[0][z][r] + v[old][z][r-1]*dr[0][z][r]);
+                   v[new][z-1][r]*dz[0][z][r] + v[new][z][r-1]*dr[0][z][r]);
           eps_sum = dz[1][z][r] + dr[1][z][r] + dz[0][z][r] + dr[0][z][r];
         } else if (setup->point_type[z][r] >= DITCH) {  // in or adjacent to the ditch
           v_sum = (v[old][z+1][r]*eps_dz[z  ][r] + v[old][z][r+1]*eps_dr[z][r  ]*s1[r] +
-                   v[old][z-1][r]*eps_dz[z-1][r] + v[old][z][r-1]*eps_dr[z][r-1]*s2[r]);
+                   v[new][z-1][r]*eps_dz[z-1][r] + v[new][z][r-1]*eps_dr[z][r-1]*s2[r]);
           eps_sum = (eps_dz[z][r]   + eps_dr[z][r]  *s1[r] +
                      eps_dz[z-1][r] + eps_dr[z][r-1]*s2[r]);
         }
 
         // calculate the interpolated mean potential and the effect of the space charge
-        if (ev_calc ||
-            (setup->vacuum_gap > 0 && z == 1))
+
+        if ((ev_calc || (setup->vacuum_gap > 0 && z == 1)) &&
+            setup->point_type[z][r] < CONTACT_EDGE && r > 1 && z > 1) {   // normal bulk, no complications
+          v[new][z][r] = (1.0-OR_fact)*v[old][z][r] + OR_fact * (v_sum / eps_sum + setup->impurity[z][r]);
+        } else if (ev_calc || (setup->vacuum_gap > 0 && z == 1)) {
           v[new][z][r] = v_sum / eps_sum + setup->impurity[z][r];
-        else
+        } else if (setup->point_type[z][r] < CONTACT_EDGE && r > 1 && z > 1) {   // normal bulk, no complications
+          v[new][z][r] = (1.0-OR_fact)*v[old][z][r] + OR_fact * v_sum / eps_sum;
+        } else {                          // over-relaxation at the edges seems to make things worse
           v[new][z][r] = v_sum / eps_sum;
+        }
 
         // calculate difference from last iteration, for convergence check
-        dif = v[old][z][r] - v[new][z][r];
-        if (dif < 0) dif = -dif;
+        dif = fabs(v[old][z][r] - v[new][z][r]);
         sum_dif += dif;
         if (max_dif < dif) max_dif = dif;
-        // do over-relaxation
-        v[new][z][r] += OR_fact*save_dif;
       }
     }
 
@@ -939,7 +936,9 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
     }
     // check for convergence
     if ( ev_calc && max_dif < 0.00000008) break;
+    if ( ev_calc && max_dif < 0.0008) break;  // comment out if you want convergence at the numerical error level
     if (!ev_calc && max_dif < 0.0000000001) break;
+    if (!ev_calc && max_dif < 0.000001) break;  // comment out if you want convergence at the numerical error level
 
     /* every 100 iterations, check that detector is really depleted*/
     if (ev_calc && iter > 190 && iter%100 == 0) {
@@ -952,7 +951,7 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
                v[new][z][r] < v[new][z][r] &&
                v[new][z][r] < v[new][z][r] &&
                v[new][z][r] < v[new][z][r])) {
-            printf("Detector may not be fully depleted. Calling ev_relax_undep()\n");
+            printf("Detector may not be fully depleted. Switching to ev_relax_undep()\n");
             ev_relax_undep(setup);
             return 0;
           }
@@ -972,6 +971,10 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
 } /* do_relax */
 
 /* -------------------------------------- ev_relax_undep ------------------- */
+/*  This function, unlike do_relax() above, properly handles undepleted detectors.
+    Note that this function uses a modified sequential over-relaxtion algorithm,
+    while do_relax() above uses a more standard text-book version.
+ */
 int ev_relax_undep(MJD_Siggen_Setup *setup) {
   int    old = 1, new = 0, iter, r, z, bvn;
   float  grid = setup->xtal_grid;
