@@ -866,6 +866,8 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
     double OR_fact;
     if (ev_calc)  OR_fact = (1.991 - 1500.0/(L*R));
     else          OR_fact = (1.992 - 1500.0/(L*R));
+    if (OR_fact < 1.4) OR_fact = 1.4;
+    // if (iter == 0) printf("OR_fact = %f\n", OR_fact);
     if (iter < 1) OR_fact = 1.0;
 
     old = new;
