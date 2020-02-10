@@ -12,7 +12,7 @@ RM = rm -f
 mk_signal_files = calc_signal.c cyl_point.c detector_geometry.c fields.c point.c read_config.c
 mk_signal_headers = calc_signal.h cyl_point.h detector_geometry.h fields.h mjd_siggen.h point.h
 
-All: stester mjd_fieldgen mass dtc
+All: stester mjd_fieldgen mass
 
 # interactive interface for signal calculation code
 stester: $(mk_signal_files) $(mk_signal_headers) signal_tester.c
