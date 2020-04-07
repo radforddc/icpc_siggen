@@ -506,7 +506,7 @@ int write_ev(MJD_Siggen_Setup *setup) {
   printf("\n Minimum bulk field = %.2f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
          setup->Emin, setup->rmin, setup->zmin);
 
-  if (1) { /* write point_type to output file */
+  if (0) { /* write point_type to output file */
     file = fopen("fields/point_type.dat", "w");
     for (j = 1; j < R; j++) {
       for (i = 1; i < L; i++)
