@@ -803,14 +803,14 @@ int grid_init(MJD_Siggen_Setup *setup) {
   for (j = 1; j < R; j++) {
     r = (j-1) * grid;
     if (setup->impurity_rpower > 0.1) {
-      imp_ra = setup->impurity_radial_add * e_over_E *
+      imp_ra = setup->impurity_radial_add * e_over_E * grid*grid / 4.0 *
         pow((double) r / setup->xtal_radius, setup->impurity_rpower);
       imp_rm = 1.0 + (setup->impurity_radial_mult - 1.0f) *
         pow((double) r / setup->xtal_radius, setup->impurity_rpower);
     }
     for (i = 1; i < L; i++)  setup->impurity[i][j] = imp_z[i] * imp_rm + imp_ra;
     if (setup->point_type[1][j] == PASSIVE) {
-      setup->impurity[1][j] += setup->impurity_surface * e_over_E * grid;
+      setup->impurity[1][j] += setup->impurity_surface * e_over_E * grid/4.0;
     }
     /* reduce charge volume for CONTACT_EDGE pixels */
     for (i = 1; i < L; i++) {
