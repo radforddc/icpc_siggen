@@ -19,22 +19,25 @@ int main(int argc, char **argv)
   MJD_Siggen_Setup setup;
 
   /* --- default values, normally over-ridden by values in a *.conf file --- */
-  float   r  = 0;  // radius of detector, in grid lengths
-  float   l  = 0;  // length of detector, in grid lengths
-  float   rc = 0;  // radius of central contact, in grid lengths
-  float   lc = 0;  // length of central contact, in grid lengths
-  float   lt = 0;  // length of taper, in grid lengths
-  float   ro = 0;  // radius of wrap-around outer (li) contact, in grid lengths
-  float   lo = 0;  // length of ditch next to wrap-around outer (li) contact, in grid lengths
-  float   wo = 0;  // width of ditch next to wrap-around outer (li) contact, in grid lengths
+  /* all dimensions are in mm */
+  float   r  = 0;  // radius of detector
+  float   l  = 0;  // length of detector
+  float   rc = 0;  // radius of central contact
+  float   lc = 0;  // length of central contact
+  float   lt = 0;  // length of taper
+  float   ro = 0;  // radius of wrap-around outer (li) contact
+  float   lo = 0;  // length of ditch next to wrap-around outer (li) contact
+  float   wo = 0;  // width of ditch next to wrap-around outer (li) contact
 
-  float   rh  = 10; // radius of core hole in outer (li) contact, in grid lengths
-  float   lh  = 80; // length of core hole in outer (li) contact, in grid lengths
+  float   rh  = 10; // radius of core hole in outer (li) contact
+  float   lh  = 80; // length of core hole in outer (li) contact
   float   hb  = 5;  // bulletization radius at bottom of hole
-  float   otl = 80; // length of outer radial taper of crystal, in grid lengths
-  float   otw = 10; // width/amount of outer radial taper (decrease in radius), in grid lengths
-  float   htl = 0;  // length of radial tapered part of core hole, in grid lengths
-  float   htw = 0;  // width/amount of radial taper (increase in radius) of hole, in grid lengths
+  float   otl = 80; // length of outer radial taper of crystal
+  float   otw = 10; // width/amount of outer radial taper (decrease in radius)
+  float   htl = 0;  // length of radial tapered part of core hole
+  float   htw = 0;  // width/amount of radial taper (increase in radius) of hole
+  float   tbr = 0;  // top bullet radius
+  float   bbr = 0;  // bottom bullet radius
   /* ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  --- */
 
   float  v, r1, r2, h1, h2, v1, v2;
@@ -61,6 +64,8 @@ int main(int argc, char **argv)
   otw = setup.outer_taper_width;
   htl = setup.inner_taper_length;
   htw = setup.inner_taper_width;
+  tbr = setup.top_bullet_radius;
+  bbr = setup.bottom_bullet_radius;
 
 
   printf("\n\n"
@@ -116,6 +121,31 @@ int main(int argc, char **argv)
     printf("outer (top) taper: %7.0f mm3  =  %4.0f g\n", v1, v1*0.005323);
   }
 
+  // top and bottom bullet radius
+  if (tbr > 0.1) {
+    v1 = 1.35 * r * tbr*tbr;
+    v -= v1;
+    printf("top bullet radius: %7.0f mm3  =  %4.0f g\n", v1, v1*0.005323);
+  }
+  if (bbr > 0.1) {
+    v1 = 1.35 * r * bbr*bbr;
+    v -= v1;
+    printf("  bottom bullet r: %7.0f mm3  =  %4.0f g\n", v1, v1*0.005323);
+  }
+
+  // outer (top) taper
+  if (otl * otw > 0.1) {
+    r1 = r;
+    r2 = r - otw;
+    h1 = otl * r / otw;
+    h2 = h1 - otl;
+    v1 = pi * r1*r1 * h1 / 3.0;
+    v2 = pi * r2*r2 * h2 / 3.0;
+    v1 = pi * r*r * otl - v1 + v2;
+    v -= v1;
+    printf("outer (top) taper: %7.0f mm3  =  %4.0f g\n", v1, v1*0.005323);
+  }
+
   // ditch
   if (ro * lo > 0.1) {
     r1 = ro;
@@ -127,5 +157,17 @@ int main(int argc, char **argv)
 
   printf("\n  final volume:  %.0f mm3  =  %.1f cm3\n", v, v/1000.0);
   printf("  final   mass:  %.0f g   [%.0f g for enriched 76Ge]\n\n", v * 5.323/1000.0, v * 5.544/1000.0);
+
+  /* summarize geometry and mass for enriched detectors */
+  if (1) {
+    char *c, name[256];
+    strncpy(name, argv[1], 256);
+    while ((c = strstr(name, "/"))) strncpy(name, c+1, 256);
+    if ((c = strstr(name, ".con"))) *c = 0;
+    printf(" detector  len  diam  enr_mass Vop  well_diamxlen taper ditchOD\n"
+           " %8s %5.1f %5.1f %6.0f  %4.0f  %4.1fx%.1f   %4.1f %4.1f\n",
+           name, l, 2.0*r, v * 5.544/1000.0, setup.xtal_HV, 2.0*rh, lh, htl, 2.0*ro);
+  }
+
   return 0;
 }

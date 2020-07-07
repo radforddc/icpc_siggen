@@ -211,70 +211,74 @@ int main(int argc, char **argv)
   int    LC = lrint(setup.pc_length/grid)+1;
   int    RC = lrint(setup.pc_radius/grid)+1;
 
-  esum = esum2 = test = 0;
-  for (z=1; z<L; z++) {
-    for (r=2; r<R; r++) {
-      E_r = setup.eps_dr[z][r]/16.0 * (setup.v[1][z][r] - setup.v[1][z][r+1])/(0.1*grid);
-      E_z = setup.eps_dz[z][r]/16.0 * (setup.v[1][z][r] - setup.v[1][z+1][r])/(0.1*grid);
-      esum += (E_r*E_r + E_z*E_z) * (double) (r-1);
-      if ((r == RC   && z <= LC)   || (r <= RC   && z == LC)   ||
-	  (r == RC+1 && z <= LC+1) || (r <= RC+1 && z == LC+1)) { // average over two different surfaces
-	if (setup.point_type[z+1][r+1] == PC) test = 1;
-	esum2 += 0.5 * sqrt(E_r*E_r + E_z*E_z) * (double) (r-1);  // 0.5 since averaging over 2 surfaces
+  if (setup.write_WP) {
+    esum = esum2 = test = 0;
+    for (z=1; z<L; z++) {
+      for (r=2; r<R; r++) {
+        E_r = setup.eps_dr[z][r]/16.0 * (setup.v[1][z][r] - setup.v[1][z][r+1])/(0.1*grid);
+        E_z = setup.eps_dz[z][r]/16.0 * (setup.v[1][z][r] - setup.v[1][z+1][r])/(0.1*grid);
+        esum += (E_r*E_r + E_z*E_z) * (double) (r-1);
+        if ((r == RC   && z <= LC)   || (r <= RC   && z == LC)   ||
+            (r == RC+1 && z <= LC+1) || (r <= RC+1 && z == LC+1)) { // average over two different surfaces
+          if (setup.point_type[z+1][r+1] == PC) test = 1;
+          esum2 += 0.5 * sqrt(E_r*E_r + E_z*E_z) * (double) (r-1);  // 0.5 since averaging over 2 surfaces
+        }
       }
     }
+    esum  *= 2.0 * pi * 0.01 * Epsilon * pow(grid, 3.0);
+    // Epsilon is in pF/mm
+    // 0.01 converts (V/cm)^2 to (V/mm)^2, pow() converts to grid^3 to mm3
+    esum2 *= 2.0 * pi * 0.1 * Epsilon * pow(grid, 2.0);
+    // 0.1 converts (V/cm) to (V/mm),  grid^2 to  mm2
+    printf("  >>  Calculated capacitance at %.0f V: %.3lf pF\n", BV, esum);
+    if (!test)
+      printf("  >>  Alternative calculation of capacitance: %.3lf pF\n", esum2);
   }
-  esum  *= 2.0 * pi * 0.01 * Epsilon * pow(grid, 3.0);
-  // Epsilon is in pF/mm
-  // 0.01 converts (V/cm)^2 to (V/mm)^2, pow() converts to grid^3 to mm3
-  esum2 *= 2.0 * pi * 0.1 * Epsilon * pow(grid, 2.0);
-  // 0.1 converts (V/cm) to (V/mm),  grid^2 to  mm2
-  printf("  >>  Calculated capacitance at %.0f V: %.3lf pF\n", BV, esum);
-  if (!test)
-    printf("  >>  Alternative calculation of capacitance: %.3lf pF\n", esum2);
 
   /* -------------- estimate depletion voltage */
   double min = BV, min2 = BV, dV, dW, testv;
   int    vminr=0, vminz=0;
   int    dz[4] = {1, -1, 0, 0}, dr[4] = {0, 0, 1, -1};
-  if (setup.fully_depleted) {
-    // find minimum potential
-    for (z=1; z<LC+2; z++) {
-      for (r=1; r<RC+2; r++) {
-        if (setup.vsave[z][r] > 0 &&
-            min > setup.vsave[z][r] / (1.0 - setup.v[1][z][r])) {
-          min = setup.vsave[z][r] / (1.0 - setup.v[1][z][r]);
+  if (setup.write_WP) {
+    if (setup.fully_depleted) {
+      // find minimum potential
+      for (z=1; z<LC+2; z++) {
+        for (r=1; r<RC+2; r++) {
+          if (setup.vsave[z][r] > 0 &&
+              min > setup.vsave[z][r] / (1.0 - setup.v[1][z][r])) {
+            min = setup.vsave[z][r] / (1.0 - setup.v[1][z][r]);
+          }
         }
+      }
+      /* check for bubble depletion / pinch-off by seeing how much the bias
+         must be reduced for any pixel to be in a local potential minimum  */
+      for (z=LC+2; z<L-2; z++) {
+        for (r=1; r<R-2; r++) {
+          if (setup.point_type[z][r] == INSIDE && setup.v[1][z][r] > 0.0001) {
+            testv = -1;
+            for (i=0; i<4; i++) {
+              if (r==1 && i==2) break;  // do not check dr for r=1 (=0.0)
+              dV = setup.vsave[z+dz[i]][r+dr[i]]  - setup.vsave[z][r];  // potential
+              dW = setup.v[1][z+dz[i]][r+dr[i]]   - setup.v[1][z][r];   // WP
+              if (dW*grid > 0.00001 && dV < 0 && testv < -dV/dW) testv = -dV/dW;
+            }
+            if (testv >= 0 && min2 > testv) {
+              min2 = testv;
+              vminr = r; vminz = z;
+            }
+          }
+        }
+      }
+      if (min2 < min) {
+        printf("Estimated pinch-off voltage = %.0f V\n", BV - min);
+        printf(" min2 = %.1f at (r,z) = (%.1f, %.1f), so\n",
+               min2, (vminr-1)*grid, (vminz-1)*grid);
+        printf("   Full depletion (max pinch-off voltage) = %.0f\n", BV - min2);
+      } else {
+        printf("Estimated depletion voltage = %.0f V\n", BV - min);
       }
     }
 
-    /* check for bubble depletion / pinch-off by seeing how much the bias
-       must be reduced for any pixel to be in a local potential minimum  */
-    for (z=LC+2; z<L-2; z++) {
-      for (r=1; r<R-2; r++) {
-        if (setup.point_type[z][r] == INSIDE && setup.v[1][z][r] > 0.0001) {
-          testv = -1;
-          for (i=0; i<4; i++) {
-            if (r==1 && i==2) break;  // do not check dr for r=1 (=0.0)
-            dV = setup.vsave[z+dz[i]][r+dr[i]]  - setup.vsave[z][r];  // potential
-            dW = setup.v[1][z+dz[i]][r+dr[i]]   - setup.v[1][z][r];   // WP
-            if (dW*grid > 0.00001 && dV < 0 && testv < -dV/dW) testv = -dV/dW;
-          }
-          if (testv >= 0 && min2 > testv) {
-            min2 = testv;
-            vminr = r; vminz = z;
-          }
-        }
-      }
-    }
-    if (min2 < min) {
-      printf("Estimated pinch-off voltage = %.0f V\n", BV - min);
-      printf(" min2 = %.1f at (r,z) = (%.1f, %.1f), so\n",
-             min2, (vminr-1)*grid, (vminz-1)*grid);
-      printf("   Full depletion (max pinch-off voltage) = %.0f\n", BV - min2);
-    } else {
-      printf("Estimated depletion voltage = %.0f V\n", BV - min);
-    }
     printf("Minimum bulk field = %.2f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
            setup.Emin, setup.rmin, setup.zmin);
   }
@@ -404,10 +408,10 @@ int report_config(FILE *fp_out, char *config_file_name) {
 int write_ev(MJD_Siggen_Setup *setup) {
   int    i, j, new=1;
   float  grid = setup->xtal_grid;
-  int    L  = setup->xtal_length/grid + 2.99;
-  int    R  = setup->xtal_radius/grid + 2.99;
-  //int    L  = lrint(setup->xtal_length/grid)+2;
-  //int    R  = lrint(setup->xtal_radius/grid)+2;
+  //int    L  = setup->xtal_length/grid + 2.99;
+  //int    R  = setup->xtal_radius/grid + 2.99;
+  int    L  = lrint(setup->xtal_length/grid)+2;
+  int    R  = lrint(setup->xtal_radius/grid)+2;
   float  r, z;
   float  E_r, E_z, E;
   FILE   *file;
@@ -415,6 +419,7 @@ int write_ev(MJD_Siggen_Setup *setup) {
 
   setup->Emin = 99999.9;
   setup->rmin = setup->zmin = 999.9;
+
 
   if (setup->impurity_z0 > 0) {
     // swap voltages back to negative for n-type material
@@ -491,7 +496,7 @@ int write_ev(MJD_Siggen_Setup *setup) {
       if (E > 0.1 && E < setup->Emin &&
           i > k+1 && j < R-k-1 && i < L-k-1 &&
           setup->point_type[i][j] == INSIDE &&
-          setup->point_type[i + k][j] == INSIDE &&  // point is at leat 3 mm from a boundary
+          setup->point_type[i + k][j] == INSIDE &&  // point is at least 3 mm from a boundary
           setup->point_type[i - k][j] == INSIDE &&
           setup->point_type[i][j + k] == INSIDE &&
           (j < k+1 || setup->point_type[i][j - k] == INSIDE)) {
@@ -503,8 +508,9 @@ int write_ev(MJD_Siggen_Setup *setup) {
     fprintf(file, "\n");
   }
   fclose(file);
-  printf("\n Minimum bulk field = %.2f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
-         setup->Emin, setup->rmin, setup->zmin);
+  if (!setup->write_WP)
+    printf("\n Minimum bulk field = %.2f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
+           setup->Emin, setup->rmin, setup->zmin);
 
   if (0) { /* write point_type to output file */
     file = fopen("fields/point_type.dat", "w");
@@ -590,6 +596,7 @@ int grid_init(MJD_Siggen_Setup *setup) {
   int    R  = lrint(setup->xtal_radius/grid)+3;
   int    i, j;
   float  r, z;
+
 
   /* first malloc arrays in setup */
   if ((setup->impurity   = malloc(L * sizeof(*setup->impurity)))   == NULL ||
