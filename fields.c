@@ -296,8 +296,8 @@ static int nearest_field_grid_index(cyl_pt pt, cyl_int_pt *ipt,
    set up drift velocity calculations (read in table)
 */
 static int setup_velo(MJD_Siggen_Setup *setup){
-  static int vlook_sz = 0;
-  static struct velocity_lookup *v_lookup;
+  int vlook_sz = 0;
+  struct velocity_lookup *v_lookup;
 
   char  line[MAX_LINE], *c;
   FILE  *fp;
