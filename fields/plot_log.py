@@ -72,8 +72,12 @@ def main():
     cbar = plt.colorbar(ip, fraction=0.046, pad=0.04)
     label_text = ["Potential", "Field", "Radial Field", "Longitudinal Field"]
     units_text = [" [V]", " [V/cm]", " [V/cm]", " [V/cm]"]
-    cbar.set_label(label_text[z_index-2] + units_text[z_index-2], size=13, labelpad=8)
-    plt.title(label_text[z_index-2] + " vs. Position\n", fontsize=16, linespacing=0.4)
+    if ("wp" in sys.argv[1]):
+        cbar.set_label("Weighting Potential", size=13, labelpad=8)
+        plt.title("Weighting Potential vs. Position\n", fontsize=16, linespacing=0.4)
+    else:
+        cbar.set_label(label_text[z_index-2] + units_text[z_index-2], size=13, labelpad=8)
+        plt.title(label_text[z_index-2] + " vs. Position\n", fontsize=16, linespacing=0.4)
 
     plt.tight_layout()
     plt.show()

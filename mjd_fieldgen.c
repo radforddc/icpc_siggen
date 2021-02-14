@@ -64,7 +64,7 @@ int main(int argc, char **argv)
   int   WD = 0;  // 0: do not write out depletion surface
                  // 1: write out depletion surface to depl_<HV>.dat
 
-  int   i, j;
+  int   i, j, k;
   FILE  *fp;
 
 
@@ -72,10 +72,11 @@ int main(int argc, char **argv)
     printf("Usage: %s <config_file_name> [options]\n"
            "   Possible options:\n"
 	   "      -b bias_volts\n"
-	   "      -w {0,1}  do_not/do write the field file)\n"
-	   "      -d {0,1}  do_not/do write the depletion surface)\n"
-	   "      -p {0,1}  do_not/do write the WP file)\n"
-           "      -r rho_spectrum_file_name\n", argv[0]);
+	   "      -w {0,1}  (do_not/do write the field file)\n"
+	   "      -d {0,1}  (do_not/do write the depletion surface)\n"
+	   "      -p {0,1}  (do_not/do write the WP file)\n"
+           "      -r rho_spectrum_file_name\n"
+           "      -z <rho_spectrum_offset_mm>\n", argv[0]);
     return 1;
   }
   strncpy(setup.config_file_name, argv[1], sizeof(setup.config_file_name));
@@ -96,24 +97,34 @@ int main(int argc, char **argv)
       setup.write_WP = atoi(argv[++i]);   // weighting-potential options
     } else if (strstr(argv[i], "-r")) {
       if (!(fp = fopen(argv[++i], "r"))) {   // impurity-profile-spectrum file name
-        printf("\nERROR: cannot open impurity profile spectrum file %s\n\n", argv[i+1]);
+        printf("\nERROR: cannot open impurity profile spectrum file %s\n\n", argv[i]);
         return 1;
       }
-      fread(setup.rho_z_spe, 36, 1, fp);
-      for (j=0; j<1024; j++) setup.rho_z_spe[i] = 0;
+      if (strstr(argv[i], ".spe")) fread(setup.rho_z_spe, 36, 1, fp); // skip over .spe-format header
+      for (j=0; j<1024; j++) setup.rho_z_spe[j] = 0;
       fread(setup.rho_z_spe, sizeof(setup.rho_z_spe), 1, fp);
       fclose(fp);
-      printf(" z(mm)   rho\n");
-      for (j=0; j < 200 && setup.rho_z_spe[j] != 0.0f; j++)
-        printf(" %3d  %7.3f\n", j, setup.rho_z_spe[j]);
+    } else if (strstr(argv[i], "-z")) {
+      j = atoi(argv[++i]);
+      if (j >= 199) {
+        printf("Error; rho_spectrum_offset_mm = %d is too large! max = 200\n", j);
+        return 1;
+      }
+      for (k=j; k <200; k++) setup.rho_z_spe[k-j] = setup.rho_z_spe[k];
     } else {
       printf("Possible options:\n"
 	     "      -b bias_volts\n"
 	     "      -w {0,1,2} (for WV options)\n"
 	     "      -p {0,1}   (for WP options)\n"
-             "      -r rho_spectrum_file_name\n");
+             "      -r rho_spectrum_file_name\n"
+             "      -z <rho_spectrum_offset_mm>\n");
       return 1;
     }
+  }
+  if (1 && setup.rho_z_spe[0] != 0) {
+    printf(" z(mm)   rho\n");
+    for (j=0; j < (int) setup.xtal_length; j++)
+      printf(" %3d  %7.3f\n", j, setup.rho_z_spe[j]);
   }
 
   if (setup.xtal_length/setup.xtal_grid * setup.xtal_radius/setup.xtal_grid > 2500*2500) {
@@ -412,10 +423,10 @@ int write_ev(MJD_Siggen_Setup *setup) {
   //int    R  = setup->xtal_radius/grid + 2.99;
   int    L  = lrint(setup->xtal_length/grid)+2;
   int    R  = lrint(setup->xtal_radius/grid)+2;
-  float  r, z;
-  float  E_r, E_z, E;
+  float  r, z, E;
   FILE   *file;
   double ***v = setup->v;
+  cyl_pt **e;
 
   setup->Emin = 99999.9;
   setup->rmin = setup->zmin = 999.9;
@@ -447,50 +458,61 @@ int write_ev(MJD_Siggen_Setup *setup) {
     if (setup->bubble_volts > 0.0f)
       fprintf(file, "# Pinch-off bubble at %.0f V potential\n", setup->bubble_volts);
   }
-  fprintf(file, "#\n## r (mm), z (mm), V (V),  E (V/cm), E_r (V/cm), E_z (V/cm)\n");
   
+  if ((e = (cyl_pt **) malloc(R*sizeof(*e))) == NULL) {
+    printf("ERROR: Malloc failed\n");
+    fclose(file);
+    return 1;
+  }
+  for (i = 0; i < R; i++){
+    if ((e[i] = (cyl_pt *) calloc(L, sizeof(*e[i]))) == NULL) {
+      printf("ERROR: Calloc failed\n");
+      fclose(file);
+      return 1;
+    }
+  }
+
   for (j = 1; j < R; j++) {
     r = (j-1) * grid;
     for (i = 1; i < L; i++) {
       z = (i-1) * grid;
       // calc E in r-direction
       if (j == 1) {  // r = 0; symmetry implies E_r = 0
-        E_r = 0;
+        e[j][i].r = 0;
       } else if (setup->point_type[i][j] == CONTACT_EDGE) {
-        E_r = ((v[new][i][j] - v[new][i][j+1])*setup->dr[1][i][j] +
+        e[j][i].r = ((v[new][i][j] - v[new][i][j+1])*setup->dr[1][i][j] +
                (v[new][i][j-1] - v[new][i][j])*setup->dr[0][i][j]) / (0.2*grid);
       } else if (setup->point_type[i][j] < INSIDE &&
                  setup->point_type[i][j-1] == CONTACT_EDGE) {
-        E_r =  (v[new][i][j-1] - v[new][i][j]) * setup->dr[1][i][j-1] / ( 0.1*grid) ;
+        e[j][i].r =  (v[new][i][j-1] - v[new][i][j]) * setup->dr[1][i][j-1] / ( 0.1*grid) ;
       } else if (setup->point_type[i][j] < INSIDE &&
                  setup->point_type[i][j+1] == CONTACT_EDGE) {
-        E_r =  (v[new][i][j] - v[new][i][j+1]) * setup->dr[0][i][j+1] / ( 0.1*grid) ;
+        e[j][i].r =  (v[new][i][j] - v[new][i][j+1]) * setup->dr[0][i][j+1] / ( 0.1*grid) ;
       } else if (j == R-1) {
-        E_r = (v[new][i][j-1] - v[new][i][j])/(0.1*grid);
+        e[j][i].r = (v[new][i][j-1] - v[new][i][j])/(0.1*grid);
       } else {
-        E_r = (v[new][i][j-1] - v[new][i][j+1])/(0.2*grid);
+        e[j][i].r = (v[new][i][j-1] - v[new][i][j+1])/(0.2*grid);
       }
       // calc E in z-direction
       if (setup->point_type[i][j] == CONTACT_EDGE) {
-        E_z = ((v[new][i][j] - v[new][i+1][j])*setup->dz[1][i][j] +
+        e[j][i].z = ((v[new][i][j] - v[new][i+1][j])*setup->dz[1][i][j] +
                (v[new][i-1][j] - v[new][i][j])*setup->dz[0][i][j]) / (0.2*grid);
       } else if (setup->point_type[i][j] < INSIDE &&
                  setup->point_type[i-1][j] == CONTACT_EDGE) {
-        E_z =  (v[new][i-1][j] - v[new][i][j]) * setup->dz[1][i-1][j] / ( 0.1*grid) ;
+        e[j][i].z =  (v[new][i-1][j] - v[new][i][j]) * setup->dz[1][i-1][j] / ( 0.1*grid) ;
       } else if (setup->point_type[i][j] < INSIDE &&
                  setup->point_type[i+1][j] == CONTACT_EDGE) {
-        E_z =  (v[new][i][j] - v[new][i+1][j]) * setup->dz[0][i+1][j] / ( 0.1*grid) ;
+        e[j][i].z =  (v[new][i][j] - v[new][i+1][j]) * setup->dz[0][i+1][j] / ( 0.1*grid) ;
       } else if (i == 1) {
-        E_z = (v[new][i][j] - v[new][i+1][j])/(0.1*grid);
+        e[j][i].z = (v[new][i][j] - v[new][i+1][j])/(0.1*grid);
       } else if (i == L-1) {
-        E_z = (v[new][i-1][j] - v[new][i][j])/(0.1*grid);
+        e[j][i].z = (v[new][i-1][j] - v[new][i][j])/(0.1*grid);
       } else {
-        E_z = (v[new][i-1][j] - v[new][i+1][j])/(0.2*grid);
+        e[j][i].z = (v[new][i-1][j] - v[new][i+1][j])/(0.2*grid);
       }
-      E = sqrt(E_r*E_r + E_z*E_z);
-      fprintf(file, "%7.2f %7.2f %7.1f %7.1f %7.1f %7.1f\n",
-              r, z, v[new][i][j], E, E_r, E_z);
 
+      /* temporarily store E in e[j][i].phi */
+      E = e[j][i].phi = sqrt(e[j][i].r*e[j][i].r + e[j][i].z*e[j][i].z);
       /* check for minimum field inside bulk of detector */
       int k = 3.0/grid;
       if (E > 0.1 && E < setup->Emin &&
@@ -505,9 +527,36 @@ int write_ev(MJD_Siggen_Setup *setup) {
         setup->zmin = z;
       }
     }
-    fprintf(file, "\n");
+  }
+
+  if (strstr(setup->field_name, "unf")) {
+    fprintf(file, "#\n## start of unformatted data\n");
+    i = R-1; j = L-1;
+    fwrite(&i, sizeof(int), 1, file);
+    fwrite(&j, sizeof(int), 1, file);
+    for (i = 1; i < R; i++) {
+      for (j = 1; j < L; j++) e[i][j].phi = 0;
+      if (fwrite(&e[i][1], sizeof(cyl_pt), L-1, file) != L-1) {
+        printf("ERROR while writing %s\n", setup->field_name);
+      }
+    }
+  } else {
+    fprintf(file, "#\n## r (mm), z (mm), V (V),  E (V/cm), E_r (V/cm), E_z (V/cm)\n");
+    for (j = 1; j < R; j++) {
+      r = (j-1) * grid;
+      for (i = 1; i < L; i++) {
+        z = (i-1) * grid;
+        E = e[j][i].phi;
+        fprintf(file, "%7.2f %7.2f %7.1f %7.1f %7.1f %7.1f\n",
+                r, z, v[new][i][j], E, e[j][i].r, e[j][i].z);
+      }
+      fprintf(file, "\n");
+    }
   }
   fclose(file);
+  for (i = 0; i < R; i++) free(e[i]);
+  free(e);
+
   if (!setup->write_WP)
     printf("\n Minimum bulk field = %.2f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
            setup->Emin, setup->rmin, setup->zmin);
@@ -530,11 +579,11 @@ int write_ev(MJD_Siggen_Setup *setup) {
  int write_wp(MJD_Siggen_Setup *setup) {
   int    i, j, new=1;;
   float  grid = setup->xtal_grid;
-  int    L  = setup->xtal_length/grid + 2.99;
-  int    R  = setup->xtal_radius/grid + 2.99;
-  //int    L  = lrint(setup->xtal_length/grid)+2;
-  //int    R  = lrint(setup->xtal_radius/grid)+2;
-  float  r, z;
+  //int    L  = setup->xtal_length/grid + 2.99;
+  //int    R  = setup->xtal_radius/grid + 2.99;
+  int    L  = lrint(setup->xtal_length/grid)+2;
+  int    R  = lrint(setup->xtal_radius/grid)+2;
+  float  r, z, w;
   FILE *file;
 
   if (!(file = fopen(setup->wp_name, "w"))) {
@@ -554,14 +603,28 @@ int write_ev(MJD_Siggen_Setup *setup) {
     if (setup->bubble_volts > 0.0f)
       fprintf(file, "# Pinch-off bubble at %.0f V potential\n", setup->bubble_volts);
   }
-  fprintf(file, "#\n## r (mm), z (mm), WP\n");
-  for (j = 1; j < R; j++) {
-    r = (j-1) * grid;
-    for (i = 1; i < L; i++) {
-      z = (i-1) * grid;
-      fprintf(file, "%7.2f %7.2f %12.6e\n", r, z, setup->v[new][i][j]);
+
+  if (strstr(setup->field_name, "unf")) {
+    fprintf(file, "#\n## start of unformatted data\n");
+    i = R-1; j = L-1;
+    fwrite(&i, sizeof(int), 1, file);
+    fwrite(&j, sizeof(int), 1, file);
+    for (i = 1; i < R; i++) {
+      for (j = 1; j < L; j++) {
+        w = setup->v[new][j][i];
+        fwrite(&w, sizeof(float), 1, file);
+      }
     }
-    fprintf(file, "\n");
+  } else {
+    fprintf(file, "#\n## r (mm), z (mm), WP\n");
+    for (j = 1; j < R; j++) {
+      r = (j-1) * grid;
+      for (i = 1; i < L; i++) {
+        z = (i-1) * grid;
+        fprintf(file, "%7.2f %7.2f %12.6e\n", r, z, setup->v[new][i][j]);
+      }
+      fprintf(file, "\n");
+    }
   }
   fclose(file);
 
@@ -803,6 +866,9 @@ int grid_init(MJD_Siggen_Setup *setup) {
                   setup->impurity_quadratic *
                   (1.0 - SQ(z - setup->xtal_length/2.0) / SQ(setup->xtal_length/2.0)));
     }
+  } else if (setup->rho_z_spe[(int) setup->xtal_length] == 0) {
+    printf("Error: Impurity profile spectrum is too short? rho[xtal_len = %d] = 0\n", (int) setup->xtal_length);
+    return -1;
   } else {
     for (i = 1; i < L; i++)
       imp_z[i] = e_over_E * grid*grid / 4.0 * setup->rho_z_spe[(int) ((i-1) * grid)];

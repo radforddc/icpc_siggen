@@ -52,6 +52,7 @@ int field_setup(MJD_Siggen_Setup *setup){
 	      setup->zmin, setup->zmax, setup->zstep,
 	      setup->xtal_temp);
 
+  setup->v_lookup_len = 0;
   if (setup_velo(setup) != 0){
     error("Failed to read drift velocity data from file: %s\n", 
 	  setup->drift_name);
@@ -296,8 +297,8 @@ static int nearest_field_grid_index(cyl_pt pt, cyl_int_pt *ipt,
    set up drift velocity calculations (read in table)
 */
 static int setup_velo(MJD_Siggen_Setup *setup){
-  static int vlook_sz = 0;
-  static struct velocity_lookup *v_lookup;
+  int vlook_sz = setup->v_lookup_len;
+  struct velocity_lookup *v_lookup;
 
   char  line[MAX_LINE], *c;
   FILE  *fp;
@@ -316,7 +317,10 @@ static int setup_velo(MJD_Siggen_Setup *setup){
       error("malloc failed in setup_velo\n");
       return -1;
     }
+  } else {
+    v_lookup = setup->v_lookup;
   }
+
   if ((fp = fopen(setup->drift_name, "r")) == NULL){
     error("failed to open velocity lookup table file: '%s'\n", setup->drift_name);
     return -1;
@@ -518,34 +522,58 @@ static int setup_efield(MJD_Siggen_Setup *setup){
   }
   TELL_NORMAL("Reading electric field data from file: %s\n", setup->field_name);
 
-  /*now read the table*/
-  while(fgets(line, MAX_LINE, fp) != NULL){
-    lineno++;
-    for (cp = line; isspace(*cp) && *cp != '\0'; cp++);
-    if (*cp == '#' || !strlen(cp)) continue;
-    if (sscanf(line, "%f %f %f %f %f %f", 
-	       &cyl.r, &cyl.z, &v, &eabs, &er, &ez) != 6){
-      error("failed to read electric field data from line no %d\n"
-	    "of file %s\n", lineno, setup->field_name);
+  if (strstr(setup->field_name, "unf")) {
+    /* try to read from unformatted file */
+    while (fgets(line, sizeof(line), fp) && line[0] == '#' &&
+           !strstr(line, "start of unformatted data"))
+      ;
+    if (line[0] != '#') rewind(fp);
+    fread(&i, sizeof(int), 1, fp);
+    fread(&j, sizeof(int), 1, fp);
+    if (i != setup->rlen || j != setup->zlen) {
+      error("Error in E field dimensions: %d != %d, or %d != %d\n", i, setup->rlen, j, setup->zlen);
       fclose(fp);
-      return 1;
+      return -1;
     }
-    i = lrintf((cyl.r - setup->rmin)/setup->rstep);
-    j = lrintf((cyl.z - setup->zmin)/setup->zstep);
-    if (i < 0 || i >= setup->rlen || j < 0 || j >= setup->zlen) {
-      // error("Error in efield line %d, i = %d, j = %d\n", line, i, j);
-      continue;
+    for (i = 0; i < setup->rlen; i++) {
+      if (fread(efld[i], sizeof(cyl_pt), setup->zlen, fp) != setup->zlen) {
+        error("Error while reading %s\n", setup->field_name);
+        return -1;
+      }
     }
-    cyl.phi = 0;
-    if (outside_detector_cyl(cyl, setup)) continue;
-    efld[i][j].r = er;
-    efld[i][j].z = ez;
-    efld[i][j].phi = 0;
-  }      
+    TELL_NORMAL("Done reading field, %d x %d points\n", setup->rlen, setup->zlen);
 
-  TELL_NORMAL("Done reading %d lines of electric field data\n", lineno);
+  } else {
+
+    /* read the table from a text file*/
+    while(fgets(line, MAX_LINE, fp) != NULL){
+      lineno++;
+      for (cp = line; isspace(*cp) && *cp != '\0'; cp++);
+      if (*cp == '#' || !strlen(cp)) continue;
+      if (sscanf(line, "%f %f %f %f %f %f", 
+                 &cyl.r, &cyl.z, &v, &eabs, &er, &ez) != 6){
+        error("failed to read electric field data from line no %d\n"
+              "of file %s\n", lineno, setup->field_name);
+        fclose(fp);
+        return 1;
+      }
+      i = lrintf((cyl.r - setup->rmin)/setup->rstep);
+      j = lrintf((cyl.z - setup->zmin)/setup->zstep);
+      if (i < 0 || i >= setup->rlen || j < 0 || j >= setup->zlen) {
+        // error("Error in efield line %d, i = %d, j = %d\n", line, i, j);
+        continue;
+      }
+      cyl.phi = 0;
+      if (outside_detector_cyl(cyl, setup)) continue;
+      efld[i][j].r = er;
+      efld[i][j].z = ez;
+      efld[i][j].phi = 0;
+    }      
+
+    TELL_NORMAL("Done reading %d lines of electric field data\n", lineno);
+  }
+
   fclose(fp);
-
   setup->efld = efld;
   for (i = 0; i < setup->rlen; i++) setup->efld[i] = efld[i];
 
@@ -584,25 +612,51 @@ static int setup_wp(MJD_Siggen_Setup *setup){
   }
   lineno = 0;
   TELL_NORMAL("Reading weighting potential from file: %s\n", setup->wp_name);
-  while (fgets(line, MAX_LINE, fp) != NULL){
-    lineno++;
-    for (cp = line; isspace(*cp) && *cp != '\0'; cp++);
-    if (*cp == '#' || !strlen(cp)) continue;
-    if (sscanf(line, "%f %f %f\n",&cyl.r, &cyl.z, &wp) != 3){ 
-      error("failed to read weighting potential from line %d\n"
-	    "line: %s", lineno, line);
-      fclose(fp);
-      return 1;
-    }
-    i = lrintf((cyl.r - setup->rmin)/setup->rstep);
-    j = lrintf((cyl.z - setup->zmin)/setup->zstep);
-    if (i < 0 || i >= setup->rlen || j < 0 || j >= setup->zlen) continue;
-    if (outside_detector_cyl(cyl, setup)) continue;
-    wpot[i][j] = wp;
-  }
-  TELL_NORMAL("Done reading %d lines of WP data\n", lineno);
-  fclose(fp);
 
+  if (strstr(setup->wp_name, "unf")) {
+    /* try to read from unformatted file */
+    while (fgets(line, sizeof(line), fp) && line[0] == '#' &&
+           !strstr(line, "start of unformatted data"))
+      ;
+    if (line[0] != '#') rewind(fp);
+    fread(&i, sizeof(int), 1, fp);
+    fread(&j, sizeof(int), 1, fp);
+    if (i != setup->rlen || j != setup->zlen) {
+      error("Error in WP dimensions: %d != %d, or %d != %d\n", i, setup->rlen, j, setup->zlen);
+      fclose(fp);
+      return -1;
+    }
+    for (i = 0; i < setup->rlen; i++) {
+      if (fread(wpot[i], sizeof(float), setup->zlen, fp) != setup->zlen) {
+        error("Error while reading %s\n", setup->wp_name);
+        return -1;
+      }
+    }
+    TELL_NORMAL("Done reading field, %d x %d points\n", setup->rlen, setup->zlen);
+
+  } else {
+
+    /* read the table from a text file*/
+    while (fgets(line, MAX_LINE, fp) != NULL){
+      lineno++;
+      for (cp = line; isspace(*cp) && *cp != '\0'; cp++);
+      if (*cp == '#' || !strlen(cp)) continue;
+      if (sscanf(line, "%f %f %f\n",&cyl.r, &cyl.z, &wp) != 3){ 
+        error("failed to read weighting potential from line %d\n"
+              "line: %s", lineno, line);
+        fclose(fp);
+        return 1;
+      }
+      i = lrintf((cyl.r - setup->rmin)/setup->rstep);
+      j = lrintf((cyl.z - setup->zmin)/setup->zstep);
+      if (i < 0 || i >= setup->rlen || j < 0 || j >= setup->zlen) continue;
+      if (outside_detector_cyl(cyl, setup)) continue;
+      wpot[i][j] = wp;
+    }
+    TELL_NORMAL("Done reading %d lines of WP data\n", lineno);
+  }
+
+  fclose(fp);
   setup->wpot = wpot;
   for (i = 0; i < setup->rlen; i++) setup->wpot[i] = wpot[i];
 
