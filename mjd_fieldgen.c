@@ -909,7 +909,7 @@ int do_relax(MJD_Siggen_Setup *setup, int ev_calc) {
   float  grid = setup->xtal_grid;
   int    L  = lrint(setup->xtal_length/grid)+2;
   int    R  = lrint(setup->xtal_radius/grid)+2;
-  double eps_sum, v_sum, dif, sum_dif, max_dif;
+  double eps_sum, v_sum, dif, sum_dif=0, max_dif;
   double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
   double ***dr = setup->dr, ***dz = setup->dz;
   double *s1 = setup->s1, *s2 = setup->s2;
@@ -1056,7 +1056,7 @@ int ev_relax_undep(MJD_Siggen_Setup *setup) {
   int    L  = lrint(setup->xtal_length/grid)+2;
   int    R  = lrint(setup->xtal_radius/grid)+2;
   double eps_sum, v_sum, save_dif, min;
-  double dif, sum_dif, max_dif, bubble_volts;
+  double dif, sum_dif=0, max_dif, bubble_volts=0;
   double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
   double ***dr = setup->dr, ***dz = setup->dz;
   double *s1 = setup->s1, *s2 = setup->s2;
@@ -1193,7 +1193,7 @@ int wp_relax_undep(MJD_Siggen_Setup *setup) {
   int    L  = lrint(setup->xtal_length/grid)+2;
   int    R  = lrint(setup->xtal_radius/grid)+2;
   double eps_sum, v_sum, save_dif, pinched_sum1, pinched_sum2;
-  double dif, sum_dif, max_dif;
+  double dif, sum_dif=0, max_dif;
   double ***v = setup->v, **eps_dr = setup->eps_dr, **eps_dz = setup->eps_dz;
   double ***dr = setup->dr, ***dz = setup->dz;
   double *s1 = setup->s1, *s2 = setup->s2;

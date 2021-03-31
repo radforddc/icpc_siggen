@@ -218,7 +218,7 @@ int get_signal(point pt, float *signal_out, MJD_Siggen_Setup *setup) {
    returns 0 for success
 */
 int make_signal(point pt, float *signal, float q, MJD_Siggen_Setup *setup) {
-  float  wpot, wpot2=0, dwpot;
+  float  wpot, wpot2=0, dwpot=0;
   char   tmpstr[MAX_LINE];
   point  new_pt;
   vector v, dx;
