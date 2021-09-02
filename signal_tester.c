@@ -224,13 +224,14 @@ static int get_cart(char *cmd, struct point *cart, int coord_type) {
   }
   
   for (cp = cmd; isspace(*cp); cp++);
-  for ( ; isdigit(*cp) || *cp == '.'; cp++); //skip r/x coord.
-  for ( ; isspace(*cp) || *cp == ','; cp++); //skip whitespace, commas
-  for ( ; isdigit(*cp) || *cp == '.'; cp++); //skip phi/y coord.
-  for ( ; isspace(*cp) || *cp == ','; cp++); //skip whitespace, commas
-  for ( ; isdigit(*cp) || *cp == '.'; cp++); //skip z coord
-  for ( ; isspace(*cp) || *cp == ','; cp++); //skip whitespace, commas
-  for (cp2 = cp + strlen(cp); isspace(*cp2); cp2--) //remove trailing whitespace
+  for (cp = cmd; isspace(*cp); cp++);
+  for ( ; isdigit(*cp) || *cp == '.' || *cp == '-'; cp++); //skip r/x coord.
+  for ( ; isspace(*cp) || *cp == ','; cp++);               //skip whitespace, commas
+  for ( ; isdigit(*cp) || *cp == '.' || *cp == '-'; cp++); //skip phi/y coord.
+  for ( ; isspace(*cp) || *cp == ','; cp++);               //skip whitespace, commas
+  for ( ; isdigit(*cp) || *cp == '.' || *cp == '-'; cp++); //skip z coord
+  for ( ; isspace(*cp) || *cp == ','; cp++);               //skip whitespace, commas
+  for (cp2 = cp + strlen(cp); isspace(*cp2); cp2--)        //remove trailing whitespace
     *cp2 = '\0';
 
   return (int) (cp - cmd);
