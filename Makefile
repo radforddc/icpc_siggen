@@ -14,6 +14,8 @@ mk_signal_headers = calc_signal.h cyl_point.h detector_geometry.h fields.h mjd_s
 
 All: stester mjd_fieldgen mass
 
+extras: speed dtc csv2dat aoe_dist
+
 # interactive interface for signal calculation code
 stester: $(mk_signal_files) $(mk_signal_headers) signal_tester.c
 	$(CC) $(CFLAGS) -o $@ $(mk_signal_files) signal_tester.c -lm -lreadline
@@ -30,6 +32,13 @@ speed: $(mk_signal_files) $(mk_signal_headers) speed.c
 
 dtc: $(mk_signal_files) $(mk_signal_headers) dtc.c
 	$(CC) $(CFLAGS) -o $@ $(mk_signal_files) dtc.c -lm
+
+aoe_dist: $(mk_signal_files) $(mk_signal_headers) aoe_dist.c
+	$(CC) $(CFLAGS) -o $@ $(mk_signal_files) aoe_dist.c -lm -lreadline
+
+csv2dat: csv2dat.c
+	$(CC) $(CFLAGS) -o $@ csv2dat.c
+
 
 FORCE:
 
