@@ -102,7 +102,7 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
     for (i=0; (l=strlen(key_word[i])) > 0; i++) {
       if (!strncmp(line, key_word[i], l)) {
 	/* line starts with key_word[i] */
-      printf("Line: %s", line);
+      if (setup->verbosity >= CHATTY) printf("Line: %s", line);
 	if (line[l] != ' ' && line[l] != '\t') {
 	  ok = 0;
 	} else {
@@ -270,12 +270,12 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
     if (setup->outer_taper_length > 0) {
       setup->outer_taper_width =
         setup->outer_taper_length * tan(setup->taper_angle * 3.14159/180.0);
-      printf("  ->>  outer taper width: %f\n", setup->outer_taper_width);
+      if (setup->verbosity >= CHATTY) printf("  ->>  outer taper width: %f\n", setup->outer_taper_width);
     }
     if (setup->inner_taper_length > 0) {
       setup->inner_taper_width =
         setup->inner_taper_length * tan(setup->taper_angle * 3.14159/180.0);
-      printf("  ->>  inner taper width: %f\n", setup->inner_taper_width);
+      if (setup->verbosity >= CHATTY) printf("  ->>  inner taper width: %f\n", setup->inner_taper_width);
     }
   } else {
     /* convert taper width to taper angle */
@@ -288,7 +288,7 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
       setup->taper_angle =
         atan(setup->inner_taper_width/setup->inner_taper_length) * 180.0/3.14159;
     if (setup->taper_angle > 0)
-      printf("  ->>  taper angle: %f\n", setup->taper_angle);
+      if (setup->verbosity >= CHATTY) printf("  ->>  taper angle: %f\n", setup->taper_angle);
   }
   if (setup->wrap_around_radius == 0 ||
       setup->wrap_around_radius > setup->xtal_radius - setup->bottom_taper_length)

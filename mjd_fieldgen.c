@@ -121,7 +121,7 @@ int main(int argc, char **argv)
       return 1;
     }
   }
-  if (1 && setup.rho_z_spe[0] != 0) {
+  if (setup.verbosity >= CHATTY && setup.rho_z_spe[0] != 0) {
     printf(" z(mm)   rho\n");
     for (j=0; j < (int) setup.xtal_length; j++)
       printf(" %3d  %7.3f\n", j, setup.rho_z_spe[j]);
@@ -285,6 +285,7 @@ int main(int argc, char **argv)
         printf(" min2 = %.1f at (r,z) = (%.1f, %.1f), so\n",
                min2, (vminr-1)*grid, (vminz-1)*grid);
         printf("   Full depletion (max pinch-off voltage) = %.0f\n", BV - min2);
+        min = min2;
       } else {
         printf("Estimated depletion voltage = %.0f V\n", BV - min);
       }
@@ -293,6 +294,49 @@ int main(int argc, char **argv)
     printf("Minimum bulk field = %.2f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
            setup.Emin, setup.rmin, setup.zmin);
   }
+
+#ifdef EMIN_OVERBIAS
+  // calculate a new minimum electric field at a specified bias above depletion (usually 500 V)
+
+  if (min > 0) {
+    double db = EMIN_OVERBIAS - min;
+    int k = 3.0/grid;
+    float E, ez, er, r, z;
+    // adjust potential
+    for (j = 1; j < R; j++) {
+      for (i = 1; i < L; i++) {
+        setup.vsave[i][j] -= db * setup.v[1][i][j];
+      }
+    }
+    setup.Emin = 99999.9;
+    setup.rmin = setup.zmin = 999.9;
+    /* calculate new field */
+    for (j = 1; j < R-k-1; j++) {
+      r = (j-1) * grid;
+      for (i = k+1; i < L-k-1; i++) {
+        z = (i-1) * grid;
+        if (setup.point_type[i][j]     != INSIDE ||
+            setup.point_type[i + k][j] != INSIDE ||  // point is at least 3 mm from a boundary
+            setup.point_type[i - k][j] != INSIDE ||
+            setup.point_type[i][j + k] != INSIDE ||
+            (j > k+1 && setup.point_type[i][j - k] != INSIDE)) continue;
+        // calc E
+        er = 0;
+        if (j>1) er = (setup.vsave[i][j-1] - setup.vsave[i][j+1])/(0.2*grid);
+        ez = (setup.vsave[i-1][j] - setup.vsave[i+1][j])/(0.2*grid);
+        E = sqrt(er*er + ez*ez);
+        /* check for minimum field inside bulk of detector */
+        if (E > 0.1 && E < setup.Emin) {
+          setup.Emin = E;
+          setup.rmin = r;
+          setup.zmin = z;
+        }
+      }
+    }
+    printf("Minimum bulk field at %.0fV (%dV overbias) is %.2f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
+           BV-min+EMIN_OVERBIAS, EMIN_OVERBIAS, setup.Emin, setup.rmin, setup.zmin);
+  }
+#endif
  
   return 0;
 } /* main */
