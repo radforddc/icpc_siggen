@@ -265,6 +265,31 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
   }
   fclose(file);
 
+  /* some consistency checks */
+  if (setup->inner_taper_length > setup->hole_length - setup->hole_bullet_radius)
+    setup->inner_taper_length = setup->hole_length - setup->hole_bullet_radius;
+  if (setup->hole_bullet_radius > setup->hole_radius)
+    setup->hole_bullet_radius = setup->hole_radius;
+  if (setup->outer_taper_length > setup->xtal_length ||
+      setup->inner_taper_length > setup->hole_length ||
+      setup->hole_length > setup->xtal_length ||
+      setup->hole_length < setup->hole_bullet_radius ||
+      setup->inner_taper_length > setup->hole_length - setup->hole_bullet_radius ||
+      (setup->hole_radius +
+       setup->outer_taper_width +
+       setup->inner_taper_width) > setup->xtal_radius) {
+    printf("\nERROR: Inconsistent detector dimensions:\n"
+           "   crystal length and radius: %5.2f %5.2f\n"
+           "      hole length and radius: %5.2f %5.2f\n"
+           "outer taper length and width: %5.2f %5.2f\n"
+           "inner taper length and width: %5.2f %5.2f\n\n",
+           setup->xtal_length, setup->xtal_radius,
+           setup->hole_length, setup->hole_radius,
+           setup->outer_taper_length, setup->outer_taper_width,
+           setup->inner_taper_length, setup->inner_taper_width);
+    return 1;
+  }
+
   if (setup->taper_angle > 0) {
     /* convert taper angle to taper widths */
     if (setup->outer_taper_length > 0) {
@@ -290,34 +315,13 @@ int read_config(char *config_file_name, MJD_Siggen_Setup *setup) {
     if (setup->taper_angle > 0)
       if (setup->verbosity >= CHATTY) printf("  ->>  taper angle: %f\n", setup->taper_angle);
   }
+  if (setup->wrap_around_radius > 0 &&
+      setup->ditch_depth > 0 && setup->ditch_thickness > 0 &&
+      (setup->pc_radius == 0 || setup->pc_radius > setup->wrap_around_radius - setup->ditch_thickness))
+    setup->pc_radius = setup->wrap_around_radius - setup->ditch_thickness;
   if (setup->wrap_around_radius == 0 ||
       setup->wrap_around_radius > setup->xtal_radius - setup->bottom_taper_length)
     setup->wrap_around_radius = setup->xtal_radius - setup->bottom_taper_length;
-
-  /* some consistency checks */
-  if (setup->inner_taper_length > setup->hole_length - setup->hole_bullet_radius)
-    setup->inner_taper_length = setup->hole_length - setup->hole_bullet_radius;
-  if (setup->hole_bullet_radius > setup->hole_radius)
-    setup->hole_bullet_radius = setup->hole_radius;
-  if (setup->outer_taper_length > setup->xtal_length ||
-      setup->inner_taper_length > setup->hole_length ||
-      setup->hole_length > setup->xtal_length ||
-      setup->hole_length < setup->hole_bullet_radius ||
-      setup->inner_taper_length > setup->hole_length - setup->hole_bullet_radius ||
-      (setup->hole_radius +
-       setup->outer_taper_width +
-       setup->inner_taper_width) > setup->xtal_radius) {
-    printf("\nERROR: Inconsistent detector dimensions:\n"
-           "   crystal length and radius: %5.2f %5.2f\n"
-           "      hole length and radius: %5.2f %5.2f\n"
-           "outer taper length and width: %5.2f %5.2f\n"
-           "inner taper length and width: %5.2f %5.2f\n\n",
-           setup->xtal_length, setup->xtal_radius,
-           setup->hole_length, setup->hole_radius,
-           setup->outer_taper_length, setup->outer_taper_width,
-           setup->inner_taper_length, setup->inner_taper_width);
-    return 1;
-  }
 
   return 0;
 }

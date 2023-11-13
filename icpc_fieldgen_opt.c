@@ -1,32 +1,11 @@
-/* program to calculate electric fields and weighting potentials
-              of PPC BEGe, and inverted-coax-PC Ge detectors by relaxation
+/* program to use in auto-optimization of ICPC geometries
+
    author:           D.C. Radford
-   first written:         Nov 2007
-   MJD modified version:  Oct 2014, June 2016
-      - uses the same (single) config file as modified MJD siggen
-      - added intelligent coarse grid / refinement of grid
-      - added interpolation of RC and LC positions on the grid
-      - added optional bulletization of point contact
-   This modified version: Dec 2016
-      - added hole, inner taper length, outer taper length, taper angle
-   Nov  2017: added top bulletization
+   based on mjd_fieldgen.c version from 30 Nov 2021
+   this version created Aug 2023
+   - add command line parameters for some geometric values, to over-ride config file valies
+   - calculate field at bias = 500 V over depletion voltage
 
-   May-July 2019
-      - added dead layer / Li thickness
-      - added over-relaxation factor; gained factor of ~ 40 speedup, depending on size/grid
-      - added code to estimate full-depletion voltage in the case of bubble depletion (pinch-off)
-      - added -r option to allow reading of z-impurity profile from a .spe file
-
-   Nov 2019
-      - major rewrite and re-arragement of the code
-      - broke out functions grid_init, ev_calc, wp_calc, write_ev, write_wp, do_relax, interpolate
-      - got an additional factor of ~3 speedup
-      - more modular and readable
-   Dec 2019
-      - added code to properly handle pixels next to p+ and n+ contacts
-        - much better calculation of V and E near contacts
-
-      - todo now:  execute WD=1 option
 */
 
 #include <stdio.h>
@@ -38,7 +17,8 @@
 #include "mjd_siggen.h"
 #include "detector_geometry.h"
 
-#define MAX_ITS 50000     // default max number of iterations for relaxation
+#define MAX_ITS 50000      // default max number of iterations for relaxation
+#define EMIN_OVERBIAS 500  // 500V over bias
 
 static int report_config(FILE *fp_out, char *config_file_name);
 static int grid_init(MJD_Siggen_Setup *setup);
@@ -65,6 +45,7 @@ int main(int argc, char **argv)
                  // 1: write out depletion surface to depl_<HV>.dat
 
   int   i, j, k;
+  float value;
   FILE  *fp;
 
 
@@ -72,6 +53,10 @@ int main(int argc, char **argv)
     printf("Usage: %s <config_file_name> [options]\n"
            "   Possible options:\n"
 	   "      -b bias_volts\n"
+	   "      -g<n> <value>   override geometry spec from config file with <value>\n"
+	   "          n = 0/w : wrap_around_radius;   n = 1/g: hole_length_gap;     n = 2/h: hole_radius\n"
+	   "          n = 3/t : inner_taper_length;   n = 4/a: taper_angle\n"
+	   "          n = 5/l : xtal_length;          n = 6/r: xtal_radius\n"
 	   "      -w {0,1}  (do_not/do write the field file)\n"
 	   "      -d {0,1}  (do_not/do write the depletion surface)\n"
 	   "      -p {0,1}  (do_not/do write the WP file)\n"
@@ -89,6 +74,67 @@ int main(int argc, char **argv)
   for (i=2; i<argc-1; i++) {
     if (strstr(argv[i], "-b")) {
       BV = setup.xtal_HV = atof(argv[++i]);   // bias volts
+    } else if (strstr(argv[i], "-g")) {
+      printf("argv[%d] = %s\n", i, argv[i]);
+      if (*(argv[i]+2) >= 'a' && *(argv[i]+2) <= 'z') {
+        j = -1;
+        if (*(argv[i]+2) == 'w') j = 0; //   wrap_around_radius
+        if (*(argv[i]+2) == 'g') j = 1; //   hole_length_gap
+        if (*(argv[i]+2) == 'h') j = 2; //   hole_radius
+        if (*(argv[i]+2) == 't') j = 3; //   inner_taper_length
+        if (*(argv[i]+2) == 'a') j = 4; //   taper_angle
+        if (*(argv[i]+2) == 'l') j = 5; //   xtal length
+        if (*(argv[i]+2) == 'r') j = 6; //   xtal radius
+        if (*(argv[i]+2) == 'z') j = 7; //   z-cut position in mm (adds to any other -z input)
+      } else {
+        j = atoi(argv[i]+2);
+      }
+      value = atof(argv[++i]);
+      if (j==0) {
+        setup.wrap_around_radius = value;
+        printf(" g%d override: wrap_around_radius = %.1f\n", j, value);
+      } else if (j==1) {
+        setup.hole_length = setup.xtal_length - value;
+        printf(" g%d override: hole_length_gap = %.1f, hole_length = %.1f\n", j, value, setup.hole_length);
+        if (setup.inner_taper_length > setup.hole_length) {
+          setup.inner_taper_length = setup.hole_length;
+          printf("              ... and inner_taper_length = %.1f\n", setup.inner_taper_length);
+        }
+      } else if (j==2) {
+        setup.hole_radius = value;
+        printf(" g%d override: hole_radius = %.1f\n", j, value);
+      } else if (j==3) {
+        setup.inner_taper_length = value;
+        printf(" g%d override: inner_taper_length = %.1f\n", j, value);
+      } else if (j==4) {
+        setup.taper_angle = value;
+        printf(" g%d override: taper_angle = %.1f\n", j, value);
+      } else if (j==5) {
+        printf(" g%d override: xtal_length = %.1f\n", j, value);
+        if (setup.xtal_length != value) {
+          // maintain hole_length_gap by adjusting hole_length
+          setup.hole_length -= setup.xtal_length - value;
+          printf("              ... and hole_length = %.1f\n", setup.hole_length);
+          if (setup.inner_taper_length > setup.hole_length) {
+            setup.inner_taper_length = setup.hole_length;
+            printf("              ... and inner_taper_length = %.1f\n", setup.inner_taper_length);
+          }
+        }
+        setup.xtal_length = value;
+      } else if (j==6) {
+        setup.xtal_radius = value;
+        printf(" g%d override: xtal_radius = %.1f\n", j, value);
+      } else if (j==7) {
+        printf(" g%d override: xtal_cut_position = %.0f\n", j, value);
+        if (value < 0 || value >= 199) {
+          printf("Error; rho_spectrum_offset_mm = %.0f is too large! max = 200\n", value);
+          return 1;
+        }
+        for (k=lrint(value); k <200; k++) setup.rho_z_spe[k-lrint(value)] = setup.rho_z_spe[k];
+      } else {
+        printf("\nERROR: illegal geometry parameter override %s\n\n", argv[i-1]);
+        return -1;
+      }
     } else if (strstr(argv[i], "-w")) {
       WV = atoi(argv[++i]);               // write-out options
     } else if (strstr(argv[i], "-d")) {
@@ -114,8 +160,13 @@ int main(int argc, char **argv)
     } else {
       printf("Possible options:\n"
 	     "      -b bias_volts\n"
+             "      -g<n> <value>   override geometry spec from config file with <value>\n"
+             "          n = 0 : wrap_around_radius;   n = 1: hole_length_gap;     n = 2: hole_radius\n"
+             "          n = 3 : inner_taper_length;   n = 4: taper_angle\n"
+             "          n = 5 : xtal_length;          n = 6: xtal_radius\n"
 	     "      -w {0,1,2} (for WV options)\n"
 	     "      -p {0,1}   (for WP options)\n"
+             "      -d {0,1}   (do_not/do write the depletion surface)\n"
              "      -r rho_spectrum_file_name\n"
              "      -z <rho_spectrum_offset_mm>\n");
       return 1;
@@ -126,6 +177,22 @@ int main(int argc, char **argv)
     setup.inner_taper_length = setup.hole_length;
     printf(" Warning: inner_taper_length limited to hole_length = %.1f\n", setup.hole_length);
   }
+  /* a consistency check */
+  if (setup.inner_taper_length > setup.hole_length - setup.hole_bullet_radius)
+    setup.inner_taper_length = setup.hole_length - setup.hole_bullet_radius;
+  /* convert taper angle to taper widths */
+  if (setup.outer_taper_length > 0) {
+    setup.outer_taper_width =
+      setup.outer_taper_length * tan(setup.taper_angle * 3.14159/180.0);
+  }
+  if (setup.inner_taper_length > 0) {
+    setup.inner_taper_width =
+      setup.inner_taper_length * tan(setup.taper_angle * 3.14159/180.0);
+  }
+  if (setup.wrap_around_radius > 4 &&
+      setup.ditch_depth > 0 && setup.ditch_thickness > 0 &&
+      (setup.pc_radius >4 || setup.pc_radius > setup.wrap_around_radius - setup.ditch_thickness))
+    setup.pc_radius = setup.wrap_around_radius - setup.ditch_thickness;
 
   if (setup.verbosity >= CHATTY && setup.rho_z_spe[0] != 0) {
     printf(" z(mm)   rho\n");
@@ -162,7 +229,7 @@ int main(int argc, char **argv)
     }
     printf("         Bias: %.0f V\n", BV);
   }
-    
+
   if ((BV < 0 && setup.impurity_z0 < 0) || (BV > 0 && setup.impurity_z0 > 0)) {
     printf("ERROR: Expect bias and impurity to be opposite sign!\n");
     return 1;
@@ -309,9 +376,9 @@ int main(int argc, char **argv)
     int k = 3.0/grid;
     float E, ez, er, r, z;
     // adjust potential
-    for (j = 1; j < R; j++) {
-      for (i = 1; i < L; i++) {
-        setup.vsave[i][j] -= db * setup.v[1][i][j];
+    for (j = 1; j <= R; j++) {
+      for (i = 1; i <= L; i++) {
+        setup.vsave[i][j] += db * (1.0 - setup.v[1][i][j]);
       }
     }
     setup.Emin = 99999.9;
@@ -339,8 +406,16 @@ int main(int argc, char **argv)
         }
       }
     }
-    printf("Minimum bulk field at %.0fV (%dV overbias) is %.2f V/cm at (r,z) = (%.1f, %.1f) mm\n\n",
+    printf("Minimum bulk field at %.0fV (%dV overbias) is %.2f V/cm at (r,z) = (%.1f, %.1f) mm\n",
            BV-min+EMIN_OVERBIAS, EMIN_OVERBIAS, setup.Emin, setup.rmin, setup.zmin);
+    /*  rewrite ev file */
+    for (j = 1; j <= R; j++) {
+      for (i = 1; i <= L; i++) {
+        setup.v[1][i][j] = setup.vsave[i][j];
+      }
+    }
+    setup.xtal_HV += db;
+    write_ev(&setup);    
   }
 #endif
  

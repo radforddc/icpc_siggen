@@ -518,7 +518,8 @@ static int aoe(char *cmd, MJD_Siggen_Setup *setup){
           "#   r = %.1f to %.1f\n"
           "# phi = %.1f to %.1f\n"
           "#   z = %.1f to %.1f\n"
-          "#    r     phi     z      A/E     DT\n",
+          //          "#    r     phi     z      A/E     DT\n",
+          "#    r      z      A/E     DT\n",
           rmin, rmax, phimin, phimax, zmin, zmax);
   //for (cyl.r = rmin; cyl.r <= rmax; cyl.r += dr) {
   // for (cyl.phi = phimin; cyl.phi <= phimax; cyl.phi += dphi) {
@@ -530,26 +531,34 @@ static int aoe(char *cmd, MJD_Siggen_Setup *setup){
         if (get_signal(cart, s, setup) < 0) {
           printf("point not in crystal: (x = %.1f, y = %.1f, z = %.1f)\n", 
                  cart.x, cart.y, cart.z);
-          fprintf(fp, " %6.1f %6.3f %6.1f  0  0\n",
-                  //   cyl.r, cyl.phi, cyl.z);
-                cart.x, cart.y, cyl.z);
+          /* fprintf(fp, " %6.1f %6.3f %6.1f  0  0\n", */
+          /*         //   cyl.r, cyl.phi, cyl.z); */
+          /*       cart.x, cart.y, cyl.z); */
+          fprintf(fp, " %6.1f %6.1f  0  0\n",
+                  cyl.r, cyl.z);
           continue;
         }
 
         s1 = s2 = 0;
-        for (i=0; i < 40; i++) s1 += s[i+40] - s[i];
-        for (i=0; i < setup->ntsteps_out - 80; i++) {
-          s1 += s[i+80] - s[i+40] - s[i+39] + s[i];
+        for (i=setup->ntsteps_out - 41; i >= 0; i--) s[i+40] = s[i];
+        for (i=0; i < 40; i++) s[i] = 0;
+        for (i=0; i < 20; i++) s1 += s[i+20] - s[i];
+        for (i=0; i < setup->ntsteps_out - 40; i++) {
+          s1 += s[i+40] - s[i+20] - s[i+19] + s[i];
           if (s2 < s1) s2 = s1;
         }
         for (i=0; i < setup->ntsteps_out; i++) {
-          if (s[i] > 0.7) break;
+          if (s[i] > 0.8) break;
         }
-        s2 *= 1000.0/40.0 * (1.0 - (float) i / 5.0e4);
-        fprintf(fp, " %6.1f %6.3f %6.1f   %6.1f  %4d\n",
-                //         cyl.r, cyl.phi, cyl.z, 2.0*s2, i);
-                cart.x, cart.y, cyl.z, 2.0*s2, i);
-        if (4.0*s2 < 4000) his[(int) (4.0*s2)] += cyl.r*cyl.r;
+        i -= 40;
+        s2 *= 1000.0/20.0 * (1.0 - (float) i / 5.0e4);
+        /* fprintf(fp, " %6.1f %6.3f %6.1f   %6.1f  %4d\n", */
+        /*         //         cyl.r, cyl.phi, cyl.z, 2.0*s2, i); */
+        /*         cart.x, cart.y, cyl.z, 2.0*s2, i); */
+        fprintf(fp, " %6.1f %6.1f   %6.1f  %4d\n",
+                cart.x, cyl.z, 2.0*s2, i);
+        // if (2.0*s2 < 4000) his[(int) (2.0*s2)] += cyl.r*cyl.r;
+        if (2.0*s2 < 4000) his[(int) (2.0*s2)] +=  cart.x*cart.x;
       }
       //}
     fprintf(fp, "\n");

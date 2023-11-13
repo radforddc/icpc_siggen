@@ -101,7 +101,7 @@ int signal_calc_init(char *config_file_name, MJD_Siggen_Setup *setup) {
 
 /* get_signal
    calculate signal for point pt. Result is placed in signal_out array
-   returns -1 if outside crystal
+   returns -1 if outside crystal, 1 on success
    if signal_out == NULL => no signal is stored
 */
 int get_signal(point pt, float *signal_out, MJD_Siggen_Setup *setup) {
@@ -135,7 +135,7 @@ int get_signal(point pt, float *signal_out, MJD_Siggen_Setup *setup) {
 
   err = make_signal(pt, signal, ELECTRON_CHARGE, setup);
   err = make_signal(pt, signal, HOLE_CHARGE, setup);
-  /* make_signal returns 0 for success; require hole signal but not electron */
+  /* make_signal returns 1 for success; require hole signal but not electron */
 
   /* change from current signal to charge signal, i.e.
      each time step contains the summed signals of all previous time steps */
@@ -208,7 +208,7 @@ int get_signal(point pt, float *signal_out, MJD_Siggen_Setup *setup) {
 		   setup->preamp_tau/setup->step_time_out, setup->ntsteps_out);
   }
 
-  /* make_signal returns 0 for success; require hole signal but not electron */
+  /* make_signal returns 1 for success; require hole signal but not electron */
   if (err) return -1;
   return 1;
 }
@@ -228,8 +228,13 @@ int make_signal(point pt, float *signal, float q, MJD_Siggen_Setup *setup) {
   int    ntsteps, i, t, n, collect2pc, low_field=0, surface_drift=0, stop_drifting = 0;
 
   new_pt = pt;
-  collect2pc = ((q > 0 && setup->impurity_z0 < 0) ||  // holes for p-type 
-		(q < 0 && setup->impurity_z0 > 0));   // electrons for n-type
+  if (setup->impurity_z0 != 0.0) {
+    collect2pc = ((q > 0 && setup->impurity_z0 < 0) ||  // holes for p-type 
+                  (q < 0 && setup->impurity_z0 > 0));   // electrons for n-type
+  } else {                                                // sometimes the impurity_z0 values can be commented out
+    collect2pc = ((q > 0 && setup->efld[0][2 + (int)(setup->pc_length/setup->xtal_grid)].z < 0) ||  // holes for p-type 
+                  (q < 0 && setup->efld[0][2 + (int)(setup->pc_length/setup->xtal_grid)].z > 0));   // electrons for n-type
+  }
   /*
   if (q > 0) {
     diffusion_coeff = TWO_TIMES_DIFFUSION_COEF_H;
@@ -311,7 +316,7 @@ int make_signal(point pt, float *signal, float q, MJD_Siggen_Setup *setup) {
       return -1;
     }
     if (wpot < 0.0) wpot = 0.0;
-    TELL_CHATTY(" -> wp: %.4f\n", wpot);
+    TELL_CHATTY(" -> wp: %.10f\n", wpot);
 
     /* ------------- DCR added Oct 2019: if WP is very small or large, then stop drifting */
     if (!collect2pc &&    wpot < 5.0e-5) stop_drifting = 2;    // drifting to outside
