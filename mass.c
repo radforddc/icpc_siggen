@@ -11,6 +11,10 @@
 
    89% enriched 76Ge density = 5.544?
    - GERDA measured 5.55  [DOI 10.1140/epjc/s10052-014-3253-0 (p3)]
+   L200 detectors: 30924 => 5.5657
+        (~ 92%)    30947 => 5.5704 mean = 5.568 g/cm3
+                   30925 => 5.5772 mean = 5.571 g/cm3
+   natural Ge = 5.323 g/cm3
  */
 
 int main(int argc, char **argv)
@@ -58,7 +62,8 @@ int main(int argc, char **argv)
         strstr(argv[i], "-d") ||
         strstr(argv[i], "-p") ||
         strstr(argv[i], "-r") ||
-        strstr(argv[i], "-z")) {
+        strstr(argv[i], "-z") ||
+        strstr(argv[i], "-o")) {
       i++; continue;
 
     } else if (strstr(argv[i], "-g")) {

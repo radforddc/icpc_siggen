@@ -278,7 +278,7 @@ int main(int argc, char **argv) {
       }
     }
     fclose(file_in);
-    printf(" >>>>>  Max loop FOM = %.2f, max FOM = %.2f, new FOW = %0.2f\n", max_fom_loop, max_fom, fomt);
+    printf(" >>>>>  Max loop FOM = %.2f, max FOM = %.2f, new FOM = %0.2f\n", max_fom_loop, max_fom, fomt);
 
     // see if we have found a new best FOM
     if (max_fom < fomt) {

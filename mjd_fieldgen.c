@@ -111,6 +111,8 @@ int main(int argc, char **argv)
         return 1;
       }
       for (k=j; k <200; k++) setup.rho_z_spe[k-j] = setup.rho_z_spe[k];
+    } else if (strstr(argv[i], "-g") || strstr(argv[i], "-o")) { // ignore these
+      continue;
     } else {
       printf("Possible options:\n"
 	     "      -b bias_volts\n"

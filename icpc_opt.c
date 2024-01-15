@@ -6,7 +6,7 @@
 
 
 int main(int argc, char **argv) {
-  int   i, j, ng=0, g[5], do_dtc = 0;
+  int   i, j, ng=0, g[5], do_dtc = 0, skip_opt=0;
   float f, f0, flo[8], fhi[8], fincr[8], fnow[8];
   float x, y, A, B, C, fom, max_fom = -9999, max_f[8], fomm, fomt;
   float wpfrac, fwhm1, fwhm2, aoe1, aoe2;
@@ -24,6 +24,7 @@ int main(int argc, char **argv) {
   /* read config file and initialize */
   if (argc < 2) {
     printf("Usage: %s <opt_config_file_name> <optional fieldgen flags>\n"
+           "          -s  : skip calculations and use existing opt.out\n"
            "          -d  : include DTC calculation (longer run time)\n"
            "          -dd : include diffusion in DTC calculation\n", argv[0]);
     return 1;
@@ -33,6 +34,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   for (i=2; i<argc; i++) {
+    if (strstr(argv[i], "-s")) skip_opt = 1;
     if (strstr(argv[i], "-d")) {
       do_dtc = 1; // run dtc for drift time correction estmate (slow)
       if (strstr(argv[i], "-dd")) do_dtc = 2; // include charge cloud size, diffusion, self-repulsion
@@ -120,82 +122,85 @@ int main(int argc, char **argv) {
          "  Mass: %.0f %0.f;  FWHM: %.2f %.2f; AoA)bad_fraction: %.2f %.2f\n",
          massgoal, dmass, fwhmgoal, dfwhm, aoegoal, daoe);
 
-
   //open output file
-  file_out = fopen("opt.out", "w");
-
-  if (ng==0) {
-    printf(" ng = %d; No geometery parameters to scan!\n", ng);
-    return -1;
-  }
-  printf(" >>> ng = %d\n flag   min   max  incr\n", ng);
-  for (i=0; i<ng; i++) {
-    printf(" -g%1d  %5.1f %5.1f %5.1f\n", g[i], flo[i], fhi[i], fincr[i]);
-    fnow[i] = flo[i];
-  }
-
-  // now do scanning
-  
-  while (1) {
-    // make system command
-    strncpy(syscommand, command, 256);
-    for (i=0; i<ng; i++) {
-      sprintf(line, " -g%1d  %.1f", g[i], fnow[i]);
-      strcat(syscommand, line);
+  if (skip_opt) printf("Skipping actual calculations, using last opt.out\n");
+  if (!skip_opt) {
+    file_out = fopen("opt.out", "w");
+    if (ng==0) {
+      printf(" ng = %d; No geometery parameters to scan!\n", ng);
+      return -1;
     }
-    strcat(syscommand, " > j.out");
-    printf("%s\n", syscommand);
-    // execute
-    system(syscommand);
+    printf(" >>> ng = %d\n flag   min   max  incr\n", ng);
+    for (i=0; i<ng; i++) {
+      printf(" -g%1d  %5.1f %5.1f %5.1f\n", g[i], flo[i], fhi[i], fincr[i]);
+      fnow[i] = flo[i];
+    }
 
-    // search for results
-    fprintf(file_out, " <<<");
-    for (i=0; i<ng; i++) fprintf(file_out, " -g%1d  %.1f", g[i], fnow[i]);
-    fprintf(file_out, "\n"); fflush(file_out);
-
-    system("grep Estimated j.out >> opt.out");
-    system("grep Full j.out >> opt.out");
-    system("grep overbias j.out >> opt.out");
-
-    // calculate mass and DTC
-    if ((c = strstr(syscommand, "icpc_fieldgen_opt"))) {
-      sprintf(c, "mass     %s", c+18);
+    // now do scanning
+  
+    while (1) {
+      // make system command
+      strncpy(syscommand, command, 256);
+      for (i=0; i<ng; i++) {
+        sprintf(line, " -g%1d  %.1f", g[i], fnow[i]);
+        strcat(syscommand, line);
+      }
+      strcat(syscommand, " > j.out");
+      printf("%s\n", syscommand);
+      // execute
       system(syscommand);
-      system("grep enriched j.out >> opt.out");
-      // printf(" > %s\n", syscommand);
-      if (do_dtc) {
-        if (do_dtc > 1) {
-          sprintf(c, "dtc -dd %s", c+8);
-        } else {
-          sprintf(c, "dtc %s", c+5);
-        }
+
+      // search for results
+      fprintf(file_out, " <<<");
+      for (i=0; i<ng; i++) fprintf(file_out, " -g%1d  %.1f", g[i], fnow[i]);
+      fprintf(file_out, "\n"); fflush(file_out);
+
+      system("grep Estimated j.out >> opt.out");
+      system("grep Full j.out >> opt.out");
+      system("grep overbias j.out >> opt.out");
+
+      // calculate mass and DTC
+      if ((c = strstr(syscommand, "icpc_fieldgen_opt"))) {
+        sprintf(c, "mass     %s", c+18);
         // printf("%s\n", syscommand);
         system(syscommand);
-        system("grep \" 0.1% threshold\" j.out >> opt.out");
-        system("grep \" A/E fraction\" j.out >> opt.out");
-        // printf(" >> %s\n", syscommand);
+        system("grep enriched j.out >> opt.out");
+        // printf(" > %s\n", syscommand);
+        if (do_dtc) {
+          if (do_dtc > 1) {
+            sprintf(c, "dtc -dd %s", c+8);
+          } else {
+            sprintf(c, "dtc %s", c+5);
+          }
+          // printf("%s\n", syscommand);
+          system(syscommand);
+          system("grep \" 0.1% threshold\" j.out >> opt.out");
+          system("grep \" A/E fraction\" j.out >> opt.out");
+          // printf(" >> %s\n", syscommand);
+        }
+      }
+
+      fseek(file_out, 0, SEEK_END);
+      fprintf(file_out, "\n"); fflush(file_out);
+
+      // increment geometry values
+      j = ng-1;
+      while (j >= 0) {
+        fnow[j] += fincr[j];
+        if (fnow[j] < fhi[j] + fincr[j]/2.0) break;
+        fnow[j] = flo[j];
+        j--;
+      }
+      if (j < 0) {  // finished scan
+        fclose(file_out);
+        break;
       }
     }
 
-    fseek(file_out, 0, SEEK_END);
-    fprintf(file_out, "\n"); fflush(file_out);
-
-    // increment geometry values
-    j = ng;
-    while (j >= 0) {
-      fnow[j] += fincr[j];
-      if (fnow[j] < fhi[j] + fincr[j]/2.0) break;
-      fnow[j] = flo[j];
-      j--;
-    }
-    if (j < 0) {  // finished scan
-      fclose(file_out);
-      break;
-    }
+    fclose (file_out);
   }
-
+  
   // now parse the ouput file and summarize results in a new output
-  fclose (file_out);
   file_in  = fopen("opt.out", "r");
   file_out = fopen("opt2.out", "w");
   f0 = flo[ng-1];
@@ -318,15 +323,17 @@ int main(int argc, char **argv) {
       fprintf(file_out, " %.3f", aoe2);
       if (AoEhigh < aoe2) AoEhigh = aoe2;
       if (AoElow  > aoe2) AoElow  = aoe2;
+      //if (FOMhigh < fomt) FOMhigh = fomt;
+      //if (FOMlow  > fomt) FOMlow  = fomt;
+      fomt += (aoegoal - aoe2)/daoe;
       if (FOMhigh < fomt) FOMhigh = fomt;
       if (FOMlow  > fomt) FOMlow  = fomt;
-      fomt += (aoegoal - aoe2)/daoe;
       //fprintf(file_out, " %.3f", (aoegoal - aoe2)/daoe);
       fprintf(file_out, "%9.3f    %s", fomt, emin_loc);
     }
   }
   fprintf(file_out, "\n");
-  for (i=0; i< 15; i++) fprintf(file_out, "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n\n");
+  for (i=0; i< 21; i++) fprintf(file_out, "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n\n");
   fclose(file_in);
   fclose(file_out);
   printf("\n Maximum FOM value is %.3f\n at", max_fom);
@@ -339,6 +346,7 @@ int main(int argc, char **argv) {
   printf("FWHM range %.2f to %.2f\n", FWHMlow, FWHMhigh);
   f = Vhigh - Vlow; Vlow -= f/10.0; Vhigh += f/10.0;
   f = Ehigh - Elow; Elow -= f/10.0; Ehigh += f/10.0;
+  if (FOMlow < -1) FOMlow  = -1;
   f = FOMhigh - FOMlow; FOMlow -= f/10.0; FOMhigh += f/10.0;
   f = Masshigh - Masslow; Masslow -= f/10.0; Masshigh += f/10.0;
   f = WPhigh - WPlow; WPlow -= f/10.0; WPhigh += f/10.0;
@@ -349,7 +357,7 @@ int main(int argc, char **argv) {
   if (Ehigh < 220) Ehigh = 220; 
   if (Elow  > 190) Elow  = 190; 
   if (FOMlow > 0)  FOMlow  = 0; 
-  if (FOMlow < -1) FOMlow  = -1;
+  //if (FOMlow < -1) FOMlow  = -1;
   if (AoElow < 0)  AoElow  = 0;
  
   file_out = fopen("sed.sh", "w");

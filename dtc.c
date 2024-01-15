@@ -42,7 +42,8 @@ int main(int argc, char **argv) {
         strstr(argv[i], "-w") ||
         strstr(argv[i], "-p") ||
         strstr(argv[i], "-r") ||
-        strstr(argv[i], "-z")) {
+        strstr(argv[i], "-z") ||
+        strstr(argv[i], "-o")) {
       i++; continue;
 
     } else if (strstr(argv[i], "-dd")) {

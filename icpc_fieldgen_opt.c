@@ -45,6 +45,10 @@ int main(int argc, char **argv)
                  // 1: write out depletion surface to depl_<HV>.dat
 
   int   i, j, k;
+  int   overbias = 0;
+#ifdef EMIN_OVERBIAS
+  overbias = EMIN_OVERBIAS;
+#endif
   float value;
   FILE  *fp;
 
@@ -61,7 +65,8 @@ int main(int argc, char **argv)
 	   "      -d {0,1}  (do_not/do write the depletion surface)\n"
 	   "      -p {0,1}  (do_not/do write the WP file)\n"
            "      -r rho_spectrum_file_name\n"
-           "      -z <rho_spectrum_offset_mm>\n", argv[0]);
+           "      -o overbias value (HV - V_depl); default is %d\n"
+           "      -z <rho_spectrum_offset_mm>\n", argv[0], overbias);
     return 1;
   }
   strncpy(setup.config_file_name, argv[1], sizeof(setup.config_file_name));
@@ -126,9 +131,12 @@ int main(int argc, char **argv)
         printf(" g%d override: xtal_radius = %.1f\n", j, value);
       } else if (j==7) {
         printf(" g%d override: xtal_cut_position = %.0f\n", j, value);
-        if (value < 0 || value >= 199) {
+        if (value >= 199) {
           printf("Error; rho_spectrum_offset_mm = %.0f is too large! max = 200\n", value);
           return 1;
+        } else if (value < 0 ) {
+          printf("Error; rho_spectrum_offset_mm = %.0f is < 0, setting to 0\n", value);
+          value = 0;
         }
         for (k=lrint(value); k <200; k++) setup.rho_z_spe[k-lrint(value)] = setup.rho_z_spe[k];
       } else {
@@ -152,11 +160,13 @@ int main(int argc, char **argv)
       fclose(fp);
     } else if (strstr(argv[i], "-z")) {
       j = atoi(argv[++i]);
-      if (j >= 199) {
-        printf("Error; rho_spectrum_offset_mm = %d is too large! max = 200\n", j);
+      if (j < 0 || j >= 199) {
+        printf("Error; rho_spectrum_offset_mm = %d is < 0 or too large! max = 200\n", j);
         return 1;
       }
       for (k=j; k <200; k++) setup.rho_z_spe[k-j] = setup.rho_z_spe[k];
+    } else if (strstr(argv[i], "-o")) {
+      overbias = atoi(argv[++i]);
     } else {
       printf("Possible options:\n"
 	     "      -b bias_volts\n"
@@ -168,7 +178,8 @@ int main(int argc, char **argv)
 	     "      -p {0,1}   (for WP options)\n"
              "      -d {0,1}   (do_not/do write the depletion surface)\n"
              "      -r rho_spectrum_file_name\n"
-             "      -z <rho_spectrum_offset_mm>\n");
+             "      -o overbias value (HV - V_depl; default is %d)\n"
+             "      -z <rho_spectrum_offset_mm>\n", overbias);
       return 1;
     }
   }
@@ -368,56 +379,55 @@ int main(int argc, char **argv)
            setup.Emin, setup.rmin, setup.zmin);
   }
 
-#ifdef EMIN_OVERBIAS
-  // calculate a new minimum electric field at a specified bias above depletion (usually 500 V)
-
-  if (min > 0) {
-    double db = EMIN_OVERBIAS - min;
-    int k = 3.0/grid;
-    float E, ez, er, r, z;
-    // adjust potential
-    for (j = 1; j <= R; j++) {
-      for (i = 1; i <= L; i++) {
-        setup.vsave[i][j] += db * (1.0 - setup.v[1][i][j]);
-      }
-    }
-    setup.Emin = 99999.9;
-    setup.rmin = setup.zmin = 999.9;
-    /* calculate new field */
-    for (j = 1; j < R-k-1; j++) {
-      r = (j-1) * grid;
-      for (i = k+1; i < L-k-1; i++) {
-        z = (i-1) * grid;
-        if (setup.point_type[i][j]     != INSIDE ||
-            setup.point_type[i + k][j] != INSIDE ||  // point is at least 3 mm from a boundary
-            setup.point_type[i - k][j] != INSIDE ||
-            setup.point_type[i][j + k] != INSIDE ||
-            (j > k+1 && setup.point_type[i][j - k] != INSIDE)) continue;
-        // calc E
-        er = 0;
-        if (j>1) er = (setup.vsave[i][j-1] - setup.vsave[i][j+1])/(0.2*grid);
-        ez = (setup.vsave[i-1][j] - setup.vsave[i+1][j])/(0.2*grid);
-        E = sqrt(er*er + ez*ez);
-        /* check for minimum field inside bulk of detector */
-        if (E > 0.1 && E < setup.Emin) {
-          setup.Emin = E;
-          setup.rmin = r;
-          setup.zmin = z;
+  if (overbias > 0) {
+    // calculate a new minimum electric field at a specified bias above depletion (usually 500 V)
+    if (min > 0) {
+      double db = overbias - min;
+      int k = 3.0/grid;
+      float E, ez, er, r, z;
+      // adjust potential
+      for (j = 1; j <= R; j++) {
+        for (i = 1; i <= L; i++) {
+          setup.vsave[i][j] += db * (1.0 - setup.v[1][i][j]);
         }
       }
-    }
-    printf("Minimum bulk field at %.0fV (%dV overbias) is %.2f V/cm at (r,z) = (%.1f, %.1f) mm\n",
-           BV-min+EMIN_OVERBIAS, EMIN_OVERBIAS, setup.Emin, setup.rmin, setup.zmin);
-    /*  rewrite ev file */
-    for (j = 1; j <= R; j++) {
-      for (i = 1; i <= L; i++) {
-        setup.v[1][i][j] = setup.vsave[i][j];
+      setup.Emin = 99999.9;
+      setup.rmin = setup.zmin = 999.9;
+      /* calculate new field */
+      for (j = 1; j < R-k-1; j++) {
+        r = (j-1) * grid;
+        for (i = k+1; i < L-k-1; i++) {
+          z = (i-1) * grid;
+          if (setup.point_type[i][j]     != INSIDE ||
+              setup.point_type[i + k][j] != INSIDE ||  // point is at least 3 mm from a boundary
+              setup.point_type[i - k][j] != INSIDE ||
+              setup.point_type[i][j + k] != INSIDE ||
+              (j > k+1 && setup.point_type[i][j - k] != INSIDE)) continue;
+          // calc E
+          er = 0;
+          if (j>1) er = (setup.vsave[i][j-1] - setup.vsave[i][j+1])/(0.2*grid);
+          ez = (setup.vsave[i-1][j] - setup.vsave[i+1][j])/(0.2*grid);
+          E = sqrt(er*er + ez*ez);
+          /* check for minimum field inside bulk of detector */
+          if (E > 0.1 && E < setup.Emin) {
+            setup.Emin = E;
+            setup.rmin = r;
+            setup.zmin = z;
+          }
+        }
       }
+      printf("Minimum bulk field at %.0fV (%dV overbias) is %.2f V/cm at (r,z) = (%.1f, %.1f) mm\n",
+             BV-min+overbias, overbias, setup.Emin, setup.rmin, setup.zmin);
+      /*  rewrite ev file */
+      for (j = 1; j <= R; j++) {
+        for (i = 1; i <= L; i++) {
+          setup.v[1][i][j] = setup.vsave[i][j];
+        }
+      }
+      setup.xtal_HV += db;
+      write_ev(&setup);    
     }
-    setup.xtal_HV += db;
-    write_ev(&setup);    
   }
-#endif
  
   return 0;
 } /* main */
