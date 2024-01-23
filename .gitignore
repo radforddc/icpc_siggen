@@ -1,0 +1,11 @@
+# executables
+3d/mjd_fieldgen3d
+3d/stester
+mass
+mjd_fieldgen
+stester
+
+# output files
+file.spe
+undepleted.txt
+fields/*.dat
